@@ -1,0 +1,172 @@
+#pragma once
+
+#include <QObject>
+#include <QString>
+#include <QStringList>
+
+#include <QHash>
+#include <QSizeF>
+
+#include <memory>
+
+#include "browser/PageSettings.h"
+#include "css/Style.h"
+#include "html/Parser.h"
+#include "javascript/ScriptEngine.h"
+#include "network/ResourceLoader.h"
+#include "renderer/Layout.h"
+#include "storage/Bookmarks.h"
+#include "storage/History.h"
+
+namespace oqb::renderer {
+class Box;
+}
+
+namespace oqb::browser {
+
+/// A loaded page: its document, styles, box tree and layout.
+///
+/// A Page owns the whole pipeline for one navigation. Everything it needs is a
+/// member, so a Page can be created, driven to completion and queried without
+/// any global state, which is what makes the headless and test paths identical
+/// to the windowed one.
+///
+/// Lifecycle:
+///   load(url)  ->  started() ... finished() or failed()
+///   then document(), boxTree() and layout() describe what to draw.
+class Page : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit Page(const PageSettings &settings = {}, QObject *parent = nullptr);
+    ~Page() override;
+
+    /// Begins loading `url`. A previous load is abandoned first.
+    void load(const network::Url &url);
+
+    /// Reloads the current URL, bypassing the cache.
+    void reload();
+
+    /// Stops the load in progress.
+    void stop();
+
+    bool isLoading() const { return m_state != State::Idle; }
+    const network::Url &url() const { return m_url; }
+    /// The URL after any redirects, or the requested one while loading.
+    const network::Url &finalUrl() const { return m_finalUrl.isValid() ? m_finalUrl : m_url; }
+
+    const dom::Document *document() const { return m_document.get(); }
+    dom::Document *document() { return m_document.get(); }
+    const css::StyleEngine *styles() const { return m_styles.get(); }
+    const renderer::Box *boxTree() const { return m_boxTree.get(); }
+    renderer::Box *boxTree() { return m_boxTree.get(); }
+    const renderer::LayoutResult &layout() const { return m_layout; }
+
+    /// The page title: <title>, then the first heading, then the host.
+    QString title() const;
+
+    /// True when the load ended in an error page rather than the requested
+    /// document.
+    bool isErrorPage() const { return m_errorPage; }
+    QString errorMessage() const { return m_error; }
+
+    /// The scripts the page declared. Never executed; see architecture/javascript.md.
+    javascript::ScriptEngine *scripts() { return m_scripts.get(); }
+    const javascript::ScriptEngine *scripts() const { return m_scripts.get(); }
+
+    /// The external resources that were requested, for the DevTools panel.
+    QStringList requestedResources() const { return m_requestedResources; }
+    /// Resources that failed to load, with the reason.
+    QStringList failedResources() const { return m_failedResources; }
+
+    /// Links the history and bookmark stores so the page can record visits and
+    /// resolve about: pages against live data.
+    void setHistory(storage::HistoryStore *history) { m_history = history; }
+    void setBookmarks(storage::BookmarkStore *bookmarks) { m_bookmarks = bookmarks; }
+
+    /// The number of open tabs, used by the new tab page's summary line.
+    void setTabCount(int count) { m_tabCount = qMax(1, count); }
+
+    const PageSettings &settings() const { return m_settings; }
+    void setSettings(const PageSettings &settings);
+
+    /// Renders the page to an image at the page's viewport size. Used by the
+    /// screenshot mode and by the tests.
+    QImage renderToImage() const;
+
+signals:
+    /// The navigation has started, before any bytes arrive.
+    void started(const oqb::network::Url &url);
+    /// A redirect moved the navigation to `to`.
+    void redirected(const oqb::network::Url &from, const oqb::network::Url &to);
+    /// The main document has been parsed, styled and laid out. The page is
+    /// paintable at this point, even if subresources are still arriving.
+    void ready();
+    /// Subresources have been resolved and the page is as complete as it will get.
+    void finished();
+    /// The load failed; an error page has been built and be displayed.
+    void failed(const QString &message);
+    /// The document title, once it is known.
+    void titleChanged(const QString &title);
+
+private:
+    enum class State { Idle, LoadingDocument, LoadingSubresources };
+
+    void handleDocumentResource(const network::Resource &resource);
+    /// Builds a page served from inside the browser, under the about: scheme.
+    void loadBuiltinPage(const oqb::network::Url &url);
+    void buildDocument(const oqb::network::Resource &resource);
+    void collectSubresources();
+    void requestNextSubresource();
+    void handleSubresource(const oqb::network::Resource &resource);
+    void finishWithError(const QString &kind, const QString &details);
+    void buildLayout();
+    void recordHistory();
+
+    /// Marks the layout as needing to be rebuilt and schedules a single pass.
+    /// Coalescing matters: without it a page with many images is laid out once
+    /// per image, which is quadratic in the number of subresources.
+    void scheduleRelayout();
+
+    PageSettings m_settings;
+    State m_state = State::Idle;
+    network::Url m_url;
+    network::Url m_finalUrl;
+    bool m_errorPage = false;
+    QString m_error;
+
+    std::unique_ptr<network::ResourceLoader> m_loader;
+    dom::Document *m_parsedDocument = nullptr;
+    html::ParseResult m_parseResult;
+    std::unique_ptr<dom::Document> m_document;
+    std::unique_ptr<css::StyleEngine> m_styles;
+    std::unique_ptr<renderer::Box> m_boxTree;
+    renderer::LayoutResult m_layout;
+    std::unique_ptr<javascript::ScriptEngine> m_scripts;
+
+    /// Decoded image sizes by URL, so that a rebuilt box tree still knows how
+    /// large each image is.
+    QHash<QString, QSizeF> m_imageSizes;
+
+    /// True while a coalesced re-layout is already scheduled.
+    bool m_relayoutScheduled = false;
+
+    /// Stylesheets that arrived after the document, waiting for the next pass.
+    QStringList m_lateStylesheets;
+
+    /// Subresources still to fetch, in the order they were discovered.
+    QList<network::Url> m_pendingSubresources;
+    int m_inFlightSubresources = 0;
+    QStringList m_requestedResources;
+    QStringList m_failedResources;
+
+    storage::HistoryStore *m_history = nullptr;
+    storage::BookmarkStore *m_bookmarks = nullptr;
+    int m_tabCount = 1;
+
+    /// The document's own URL, used to resolve relative references in the page.
+    network::Url m_documentUrl;
+};
+
+} // namespace oqb::browser

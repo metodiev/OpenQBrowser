@@ -1,528 +1,307 @@
 # OpenQBrowser
-Open Q Browser
 
+> An open-source web browser built from scratch, focused on simplicity, privacy,
+> performance, and learning how browsers work under the hood.
 
-Absolutely — here’s a polished README for **OpenQBrowser**, assuming it’s an open-source browser project built from scratch.
+**OpenQBrowser** is an experimental browser project built from the ground up. It
+fetches pages, parses HTML, applies CSS, lays out the result and paints it, using
+its own implementation of every stage rather than an existing engine. The goal is
+to make the browser pipeline readable end to end: you can follow a URL from the
+address bar to the pixels on screen by reading the source in order.
 
-# OpenQBrowser
+It is built for developers, researchers, students, and anyone who wants to see
+how a browser works rather than only use one.
 
-> 🚀 An open-source web browser built from scratch, focused on simplicity, privacy, performance, and learning how browsers work under the hood.
-
-**OpenQBrowser** is an experimental browser project built from the ground up. The goal is to understand and implement the fundamental components that make a modern web browser work — from networking and HTML parsing to rendering, JavaScript execution, tabs, history, and more.
-
-This project is built for developers, researchers, students, and curious minds who want to explore browser internals rather than simply use an existing browser engine.
-
-
-## ✨ Features
-
-### 🌐 Core Browser
-
-* [ ] URL and address bar
-* [ ] HTTP/HTTPS networking
-* [ ] HTML parsing
-* [ ] CSS parsing
-* [ ] DOM implementation
-* [ ] CSSOM implementation
-* [ ] Page rendering
-* [ ] Links and navigation
-* [ ] Back / Forward navigation
-* [ ] Page reload
-* [ ] Error pages
-
-### 🧩 Browser UI
-
-* [ ] Tabs
-* [ ] New tab page
-* [ ] Address bar
-* [ ] Bookmarks
-* [ ] History
-* [ ] Downloads
-* [ ] Settings
-* [ ] Developer tools
-
-### ⚡ JavaScript
-
-* [ ] JavaScript engine integration
-* [ ] Script execution
-* [ ] DOM APIs
-* [ ] Events
-* [ ] Timers
-* [ ] Fetch API
-* [ ] Web APIs
-
-### 🔒 Privacy & Security
-
-* [ ] HTTPS by default
-* [ ] Certificate validation
-* [ ] Sandboxing
-* [ ] Same-origin policy
-* [ ] Cookie isolation
-* [ ] Private browsing
-* [ ] Tracking protection
-* [ ] Permission management
-
-### 🚀 Performance
-
-* [ ] HTTP caching
-* [ ] Connection pooling
-* [ ] Lazy loading
-* [ ] Parallel resource loading
-* [ ] Process isolation
-* [ ] GPU acceleration
-* [ ] Memory management
-
-> OpenQBrowser is under active development. Many of these features are planned rather than currently implemented.
-
-
-## 🏗️ Architecture
-
-OpenQBrowser is designed as a collection of independent components.
-
-```text
-                         ┌─────────────────────┐
-                         │      OpenQBrowser   │
-                         └──────────┬──────────┘
-                                    │
-                ┌───────────────────┼───────────────────┐
-                │                   │                   │
-                ▼                   ▼                   ▼
-        ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-        │   Browser UI │    │ Browser Core │    │   DevTools   │
-        └──────────────┘    └──────┬───────┘    └──────────────┘
-                                   │
-              ┌────────────────────┼────────────────────┐
-              │                    │                    │
-              ▼                    ▼                    ▼
-       ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-       │   Network   │      │   Renderer  │      │ JavaScript  │
-       │    Stack    │      │             │      │   Runtime   │
-       └─────────────┘      └──────┬──────┘      └─────────────┘
-                                   │
-                    ┌──────────────┼──────────────┐
-                    │              │              │
-                    ▼              ▼              ▼
-               ┌────────┐    ┌──────────┐    ┌──────────┐
-               │  HTML  │    │   CSS    │    │   DOM    │
-               │ Parser │    │  Engine  │    │          │
-               └────────┘    └──────────┘    └──────────┘
+```
+URL → DNS → TCP/TLS → HTTP → HTML parse → DOM → CSS cascade → box tree
+    → layout → paint → screen
 ```
 
-### Main Components
+Every arrow in that chain is a directory under [`src/`](./src), and each stage
+depends only on the stages before it.
 
-| Component     | Responsibility                                 |
-| ------------- | ---------------------------------------------- |
-| `browser/`    | Browser lifecycle and high-level orchestration |
-| `ui/`         | Windows, tabs, toolbar, menus, etc.            |
-| `network/`    | HTTP, HTTPS, DNS, connections and caching      |
-| `html/`       | HTML tokenizer and parser                      |
-| `css/`        | CSS tokenizer, parser and style system         |
-| `dom/`        | Document Object Model                          |
-| `renderer/`   | Layout, painting and rendering                 |
-| `javascript/` | JavaScript runtime and Web APIs                |
-| `storage/`    | Cookies, local storage, cache and databases    |
-| `security/`   | Sandboxing, permissions and security policies  |
-| `devtools/`   | Developer tools                                |
-| `tests/`      | Unit, integration and browser tests            |
+## Status
 
+OpenQBrowser is **experimental software**. It is not safe for everyday browsing,
+it has no sandbox, and it does not run JavaScript.
 
-## 🎯 Project Goals
+What works today:
 
-OpenQBrowser has four primary goals:
+| Area | State |
+| --- | --- |
+| Networking | HTTP/1.1 and HTTPS, redirects, chunked bodies, gzip/deflate |
+| HTML | Tokenizer and tree construction, including implied elements |
+| DOM | Element, text and comment nodes with attributes and classes |
+| CSS | Tokenizer, selectors with specificity, the cascade, media queries |
+| Rendering | Block and inline layout, margin collapsing, painting, images |
+| Browser | Tabs, back/forward history, bookmarks, built-in `about:` pages |
+| Testing | Nine test suites, all passing |
 
-### 1. Learn
+What does not work yet, and what you will observe:
 
-Understand how browsers actually work internally.
+| Area | What happens |
+| --- | --- |
+| JavaScript | Scripts are never executed. Interactive pages will not respond. See [architecture/javascript.md](./architecture/javascript.md). |
+| Flexbox, grid | `display: flex` and `display: grid` are recognised but laid out as blocks. |
+| Absolute positioning | `position: absolute` and `fixed` are parsed but the element stays in flow. |
+| Forms | Rendered and styled, but nothing is submitted. |
+| Cookies, cache | Not implemented; nothing is stored between runs. |
+| Sandboxing | No process isolation or site isolation. |
 
-### 2. Build
-
-Implement browser functionality instead of relying entirely on an existing browser engine.
-
-### 3. Experiment
-
-Provide a place to experiment with new ideas around rendering, networking, privacy, and browser architecture.
-
-### 4. Open Source
-
-Make the implementation understandable and accessible to anyone interested in browser development.
-
-
-## 🛠️ Development
+## Building
 
 ### Requirements
 
-You will need:
+* A C++20 compiler
+* CMake 3.21 or newer
+* Qt 6.5 or newer (Core, Gui, Widgets, Network, Test)
+* zlib
 
-* A modern compiler/toolchain
-* Git
-* CMake or the project's chosen build system
-* Platform-specific development libraries
-* Optional tools for debugging and profiling
-
-### Clone the repository
+On macOS with Homebrew:
 
 ```bash
-git clone https://github.com/yourusername/openqbrowser.git
-cd openqbrowser
+brew install qt cmake
 ```
 
-### Build
+### Build and test
 
 ```bash
-mkdir build
-cd build
+cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+cmake --build build -j
 
-cmake ..
-cmake --build .
+ctest --test-dir build --output-on-failure
 ```
 
 ### Run
 
-```bash
-./openqbrowser
-```
-
-> Build instructions will evolve as the project architecture becomes more mature.
-
-
-## 🧪 Testing
-
-OpenQBrowser uses multiple levels of testing.
-
-### Unit tests
-
-Test individual components:
+On macOS the build produces an application bundle, so the browser can be started
+from Finder like any other app:
 
 ```bash
-./tests/unit
+# Launch the app (macOS)
+open build/bin/openqbrowser.app
+
+# Or run the bundle's binary directly, which is the same program
+./build/bin/openqbrowser.app/Contents/MacOS/openqbrowser
 ```
 
-### Integration tests
-
-Test communication between browser components:
+On other platforms, or to pass arguments, run the executable:
 
 ```bash
-./tests/integration
+# Open the browser window
+./build/bin/openqbrowser
+
+# Load a page straight away
+./build/bin/openqbrowser https://example.com/
 ```
 
-### Browser tests
+> **Nothing appears?** If you run the plain binary and see no window, make sure
+> `QT_QPA_PLATFORM` is not set to `offscreen` in your shell — that environment
+> variable is only for headless runs and the tests.
 
-Test complete browsing workflows:
+### Making the app easier to launch (macOS)
+
+The bundle lives inside the build directory, which is convenient while working on
+the code. To keep a copy in Applications:
 
 ```bash
-./tests/browser
+cp -R build/bin/openqbrowser.app /Applications/
+open -a OpenQBrowser
 ```
 
-Example:
+To open links in it from other applications, drag the bundle onto the Dock, or add
+it under System Settings → Desktop & Dock → Default web browser.
 
-```text
-Open URL
-   ↓
-DNS lookup
-   ↓
-TCP/TLS connection
-   ↓
-HTTP request
-   ↓
-HTML response
-   ↓
-HTML parser
-   ↓
-DOM
-   ↓
-CSS parser
-   ↓
-Style calculation
-   ↓
-Layout
-   ↓
-Paint
-   ↓
-Display
+### Headless use
+
+The same pipeline runs without a window, which is what makes the browser
+testable and scriptable. These modes are how the tests and the examples in this
+repository are checked.
+
+```bash
+# Dump the parsed document tree
+./build/bin/openqbrowser --dump-dom https://example.com/
+
+# Dump the box tree with geometry
+./build/bin/openqbrowser --dump-layout https://example.com/
+
+# Dump the computed style of every element
+./build/bin/openqbrowser --dump-styles https://example.com/
+
+# Everything at once, which is also what the DevTools panel will show
+./build/bin/openqbrowser --dump-all https://example.com/
+
+# Render to a PNG
+./build/bin/openqbrowser --screenshot=page.png --width=1200 https://example.com/
 ```
 
+On a machine with no display, select the offscreen platform plugin:
 
-## 🗺️ Roadmap
-
-### Phase 1 — Foundation
-
-* [ ] Project structure
-* [ ] Window creation
-* [ ] Basic event loop
-* [ ] Logging
-* [ ] Configuration system
-
-### Phase 2 — Networking
-
-* [ ] URL parser
-* [ ] DNS resolution
-* [ ] TCP connections
-* [ ] HTTP/1.1
-* [ ] TLS
-* [ ] HTTP headers
-* [ ] Redirect handling
-
-### Phase 3 — HTML
-
-* [ ] HTML tokenizer
-* [ ] HTML parser
-* [ ] DOM tree
-* [ ] Basic elements
-* [ ] Links
-* [ ] Images
-* [ ] Forms
-
-### Phase 4 — CSS
-
-* [ ] CSS tokenizer
-* [ ] CSS parser
-* [ ] Selectors
-* [ ] Cascading
-* [ ] Computed styles
-* [ ] Basic layout
-
-### Phase 5 — Rendering
-
-* [ ] Layout engine
-* [ ] Box model
-* [ ] Text rendering
-* [ ] Painting
-* [ ] Scrolling
-* [ ] Images
-* [ ] Basic compositing
-
-### Phase 6 — Browser Features
-
-* [ ] Tabs
-* [ ] History
-* [ ] Bookmarks
-* [ ] Downloads
-* [ ] Cookies
-* [ ] Cache
-* [ ] Settings
-
-### Phase 7 — JavaScript
-
-* [ ] JavaScript runtime
-* [ ] DOM bindings
-* [ ] Events
-* [ ] Timers
-* [ ] Fetch
-* [ ] Web APIs
-
-### Phase 8 — Security
-
-* [ ] Sandboxing
-* [ ] Same-origin policy
-* [ ] Permissions
-* [ ] Secure storage
-* [ ] Content security policies
-* [ ] Process isolation
-
-### Phase 9 — Performance
-
-* [ ] Parallel networking
-* [ ] Resource caching
-* [ ] GPU rendering
-* [ ] Multiprocess architecture
-* [ ] Profiling
-* [ ] Memory optimization
-
-
-## 🧠 Browser Pipeline
-
-A simplified OpenQBrowser navigation pipeline looks like this:
-
-```text
-                    URL
-                     │
-                     ▼
-              ┌─────────────┐
-              │ URL Parser  │
-              └──────┬──────┘
-                     │
-                     ▼
-              ┌─────────────┐
-              │   Network   │
-              └──────┬──────┘
-                     │
-                     ▼
-              ┌─────────────┐
-              │ HTML Parser │
-              └──────┬──────┘
-                     │
-                     ▼
-              ┌─────────────┐
-              │     DOM     │
-              └──────┬──────┘
-                     │
-             ┌───────┴───────┐
-             ▼               ▼
-       ┌───────────┐   ┌───────────┐
-       │ CSS Parser│   │ JavaScript│
-       └─────┬─────┘   └─────┬─────┘
-             │               │
-             └───────┬───────┘
-                     ▼
-              ┌─────────────┐
-              │ Style/Layout│
-              └──────┬──────┘
-                     │
-                     ▼
-              ┌─────────────┐
-              │    Paint    │
-              └──────┬──────┘
-                     │
-                     ▼
-              ┌─────────────┐
-              │    Screen   │
-              └─────────────┘
+```bash
+QT_QPA_PLATFORM=offscreen ./build/bin/openqbrowser --screenshot=page.png about:home
 ```
 
+### On macOS
 
-## 📁 Repository Structure
+Xcode's command line tools and Homebrew's Qt must agree about the toolchain. If
+the build reports that `clang++` cannot be found even though it is installed,
+point the build at the tools that are present:
 
-A possible project structure:
+```bash
+export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+```
 
-```text
+See [architecture/build.md](./architecture/build.md) for the details.
+
+## Using the browser
+
+Type in the address bar. OpenQBrowser decides what you meant the way a browser
+does: something with a dot in it is a host name, anything else is a search.
+
+| Key | Action |
+| --- | --- |
+| `Ctrl`/`Cmd`+`L` | Focus the address bar |
+| `Alt`+`Left`, `Alt`+`Right` | Back and forward |
+| `F5` | Reload |
+| `Space`, `Page Up/Down` | Scroll a screenful |
+| `Home`, `End` | Jump to the top or bottom of the page |
+| `Ctrl`/`Cmd`+click | Open a link in a new tab |
+
+The **Boxes** button in the toolbar draws each box's content, padding and margin
+over the page. It is the first piece of the DevTools work described in
+[architecture/overview.md](./architecture/overview.md).
+
+### Built-in pages
+
+| Page | Contents |
+| --- | --- |
+| `about:home` | The new tab page |
+| `about:about` | A list of every built-in page |
+| `about:version` | Version and component details |
+| `about:history` | Pages visited in this session |
+| `about:bookmarks` | Pages you have saved |
+| `about:blank` | An empty document |
+
+These are ordinary HTML documents generated inside the browser, so they render
+through exactly the same pipeline as a network page. If the new tab page looks
+wrong, the bug is in the renderer.
+
+## Repository layout
+
+```
 OpenQBrowser/
-│
 ├── src/
-│   ├── browser/
-│   ├── ui/
-│   ├── network/
-│   ├── html/
-│   ├── css/
-│   ├── dom/
-│   ├── renderer/
-│   ├── javascript/
-│   ├── storage/
-│   ├── security/
-│   └── devtools/
-│
+│   ├── network/     URLs, HTTP/1.1, HTTPS, redirects, resource loading
+│   ├── dom/         Document Object Model
+│   ├── html/        HTML tokenizer, tree construction, entities
+│   ├── css/         CSS tokenizer, selectors, cascade, media queries
+│   ├── renderer/    Box tree, layout, painting
+│   ├── browser/     Page and Tab orchestration, built-in pages
+│   ├── javascript/  The integration seam for a future engine
+│   ├── storage/     History and bookmarks
+│   ├── security/    Origin, transport and permission policy
+│   ├── devtools/    The inspector
+│   ├── ui/          Qt Widgets shell: window, tabs, address bar
+│   └── main.cpp     Command line interface
 ├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── browser/
-│
-├── assets/
-│
-├── docs/
-│
-├── examples/
-│
+│   ├── unit/        URL, HTML, CSS and layout
+│   ├── integration/ HTTP and the full pipeline
+│   └── browser/     The window, tabs and navigation
+├── examples/        Pages that exercise the engine
+├── architecture/    Design documents for every subsystem
+├── assets/          Icons and other static files
 ├── CMakeLists.txt
-├── LICENSE
-└── README.md
+└── LICENSE
 ```
 
+`src/network` through `src/browser` form a static library, `oqb_core`, with no
+dependency on any windowing toolkit. That is what lets a page be fetched, parsed,
+styled and laid out headlessly, and it is why the command line dumps and the
+tests produce the same result as the window. `src/ui` is a second library on top
+of it.
 
-## 🤝 Contributing
+## Testing
 
-Contributions are welcome.
+Nine suites, run by `ctest`:
 
-Before submitting a pull request:
+| Suite | Covers |
+| --- | --- |
+| `tst_url` | URL parsing and RFC 3986 reference resolution |
+| `tst_html` | Tokenizer, tree construction, entities, quirks mode |
+| `tst_css` | Tokenizer, values, selectors, cascade, media queries |
+| `tst_layout` | Box tree, block and inline layout, painting |
+| `tst_http` | The HTTP client against a local server: framing, redirects, errors |
+| `tst_pipeline` | Parse → style → layout → paint, end to end |
+| `tst_redirect` | Redirect chains, late stylesheets, large documents, nesting limits |
+| `tst_perf` | Layout cost, to catch worse-than-linear behaviour |
+| `tst_browser` | The window, tabs, history, error pages |
 
-1. Fork the repository.
-2. Create a feature branch.
-3. Make your changes.
-4. Add or update tests.
+The tests are not decoration: they have found and fixed real bugs, including
+several where the parser or layout engine would loop or misplace content. See
+[architecture/testing.md](./architecture/testing.md).
+
+## Documentation
+
+The [architecture/](./architecture) directory holds the design documents. Each
+one describes a subsystem, its data structures and its known limits.
+
+Start with [architecture/overview.md](./architecture/overview.md), or jump to
+the subsystem you care about:
+
+* [overview.md](./architecture/overview.md) — the whole system and the pipeline
+* [networking.md](./architecture/networking.md) — HTTP, TLS, redirects, caching
+* [html.md](./architecture/html.md) — tokenizing and tree construction
+* [css.md](./architecture/css.md) — selectors, the cascade, media queries
+* [rendering.md](./architecture/rendering.md) — box tree, layout, painting
+* [browser.md](./architecture/browser.md) — pages, tabs, history
+* [javascript.md](./architecture/javascript.md) — the engine seam, and why it is empty
+* [security.md](./architecture/security.md) — what is enforced, and what is missing
+* [storage.md](./architecture/storage.md) — history and bookmarks today
+* [testing.md](./architecture/testing.md) — the suites and what they catch
+* [build.md](./architecture/build.md) — the build system and its specifics
+* [contributing.md](./architecture/contributing.md) — the workflow and conventions
+
+## Contributing
+
+Contributions are welcome. The short version:
+
+1. Fork the repository and create a feature branch.
+2. Make the change, following the conventions in [architecture/contributing.md](./architecture/contributing.md).
+3. Add or update tests. A change without a test is a change that will break.
+4. Add any new source file to [`src/CMakeLists.txt`](./src/CMakeLists.txt), or it
+   will not be compiled.
 5. Run the test suite.
-6. Format your code.
-7. Open a pull request.
-
-Example:
+6. Open a pull request.
 
 ```bash
-git checkout -b feature/html-parser
-
-git add .
-git commit -m "Add basic HTML parser"
-
-git push origin feature/html-parser
+git checkout -b feature/my-change
+cmake --build build -j && ctest --test-dir build --output-on-failure
+git commit -am "Describe the change"
+git push origin feature/my-change
 ```
 
-Please keep changes focused and document architectural decisions when necessary.
+Please keep changes focused and document architectural decisions in the
+relevant document under `architecture/`.
 
+## Security
 
-## 📚 Documentation
+Security is a core part of OpenQBrowser, and its current state is deliberately
+conservative:
 
-Technical documentation will live in the `docs/` directory.
+* TLS certificates are verified and there is no way to bypass a failure.
+* A secure page cannot load an insecure subresource.
+* Permissions such as camera and geolocation are denied, with no way to grant
+  them yet.
 
-Suggested documentation:
+Do **not** assume experimental browser code is safe for everyday browsing. Until
+the security architecture is mature — sandboxing, content security policy and
+process isolation are all still missing — treat OpenQBrowser as a research
+project.
 
-```text
-docs/
-├── architecture.md
-├── networking.md
-├── html.md
-├── css.md
-├── rendering.md
-├── javascript.md
-├── security.md
-├── storage.md
-└── contributing.md
-```
+If you find a vulnerability, please report it privately rather than disclosing it
+publicly before a fix is available.
 
+## License
 
-## 🔐 Security
-
-Security is a core part of OpenQBrowser.
-
-Do **not** assume that experimental browser code is safe for everyday browsing.
-
-Until the security architecture is mature, OpenQBrowser should be considered **experimental software**.
-
-If you discover a security vulnerability, please report it privately rather than publicly disclosing it before a fix is available.
-
-
-## ⚠️ Project Status
-
-**OpenQBrowser is experimental.**
-
-The project is being developed incrementally, and browser standards are extremely large and complex.
-
-The initial goal is **not** to immediately compete with mature browsers such as Chromium, Firefox, or Safari.
-
-Instead, OpenQBrowser aims to provide a clean, understandable implementation that gradually grows into a capable browser.
-
-
-## 🌟 Philosophy
-
-> **Build the browser, understand the web.**
-
-OpenQBrowser prioritizes:
-
-* Simplicity over unnecessary complexity
-* Understanding over abstraction
-* Privacy over tracking
-* Open source over proprietary systems
-* Experimentation over compatibility at all costs
-* Good architecture over premature optimization
-
-
-## 📜 License
-
-OpenQBrowser is released under the **[choose a license]**.
-
-Recommended options include:
-
-* MIT
-* Apache-2.0
-* GPL-3.0
-
-See [`LICENSE`](LICENSE) for details.
-
-
-## ⭐ Support the Project
-
-If you find OpenQBrowser interesting:
-
-* ⭐ Star the repository
-* 🐛 Report bugs
-* 💡 Suggest features
-* 🔧 Contribute code
-* 📖 Improve documentation
-* 🧪 Add tests
-* 📢 Share the project
-
-
+OpenQBrowser is released under the MIT License. See [`LICENSE`](./LICENSE).

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OpenQBrowser feature survey</title>
+<style>
+  body { margin: 0; font-family: sans-serif; color: #222; background: #f0f4f8 }
+  header { background: #133b5c; color: white; padding: 28px 32px }
+  header h1 { margin: 0; font-size: 26px }
+  header p { margin: 6px 0 0 0; color: #a8c0d6 }
+  main { padding: 24px 32px; max-width: 720px }
+  nav { background: #1e5f8a; padding: 10px 32px }
+  nav a { color: #d6e6f2; margin-right: 18px; text-decoration: none }
+  section { background: white; border: 1px solid #cfd8e0; padding: 20px; margin-bottom: 18px }
+  h2 { font-size: 19px; margin: 0 0 10px 0; color: #133b5c }
+  p { line-height: 1.6; margin: 0 0 12px 0 }
+  ol, ul { padding-left: 22px; margin: 0 0 12px 0 }
+  li { margin-bottom: 5px }
+  label { display: block; margin: 10px 0 4px 0; font-weight: bold; font-size: 14px }
+  input, select, textarea { font-family: sans-serif; padding: 6px; border: 1px solid #adb5bd;
+                            width: 100%; max-width: 400px }
+  textarea { height: 70px }
+  .primary { background: #1e5f8a; color: white; border: none; padding: 9px 18px;
+             margin-top: 14px; font-size: 15px }
+  .note { background: #fff4e6; border-left: 4px solid #e07a5f; padding: 10px 14px;
+          margin-bottom: 18px; font-size: 14px }
+  footer { padding: 18px 32px; color: #5c6b7a; font-size: 13px }
+  table { border-collapse: collapse; width: 100% }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #dee2e6 }
+  th { background: #f1f3f5 }
+</style>
+</head>
+<body>
+  <header>
+    <h1>OpenQBrowser feature survey</h1>
+    <p>How useful is the engine to you today?</p>
+  </header>
+
+  <nav>
+    <a href="#overview">Overview</a>
+    <a href="#survey">Survey</a>
+    <a href="#status">Status</a>
+  </nav>
+
+  <main>
+    <div class="note">
+      This page is deliberately built with plain markup and CSS. Because
+      OpenQBrowser does not run JavaScript, nothing here is generated or
+      validated by a script — the form below will not submit anywhere.
+    </div>
+
+    <section id="overview">
+      <h2>Overview</h2>
+      <p>This page exercises the parts of the engine a real page uses: a header,
+         navigation, several sections, a form and a table. If it renders
+         correctly, block layout, inline layout, the cascade and table display
+         types are all working.</p>
+      <ul>
+        <li>Block boxes stack vertically, with collapsed margins between them</li>
+        <li>Text breaks into lines inside each section</li>
+        <li>The table below uses <code>display: table</code> and its relatives</li>
+      </ul>
+    </section>
+
+    <section id="survey">
+      <h2>Survey</h2>
+      <label for="name">Your name</label>
+      <input id="name" type="text" placeholder="Ada Lovelace">
+
+      <label for="use">What do you use OpenQBrowser for?</label>
+      <select id="use">
+        <option>Learning how browsers work</option>
+        <option>Testing the renderer</option>
+        <option>Contributing code</option>
+      </select>
+
+      <label for="comments">Comments</label>
+      <textarea id="comments" placeholder="What would you like to see next?"></textarea>
+
+      <label for="motion">Would you like a JavaScript engine?</label>
+      <select id="motion">
+        <option>Yes, that is the biggest gap</option>
+        <option>No, the renderer matters more</option>
+      </select>
+
+      <button class="primary">Submit</button>
+    </section>
+
+    <section id="status">
+      <h2>Status</h2>
+      <table>
+        <thead>
+          <tr><th>Component</th><th>State</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Network</td><td>HTTP/1.1, HTTPS, redirects, compression</td></tr>
+          <tr><td>HTML</td><td>Tokenizer and tree construction</td></tr>
+          <tr><td>CSS</td><td>Selectors, cascade, media queries</td></tr>
+          <tr><td>Rendering</td><td>Block and inline layout, painting</td></tr>
+          <tr><td>JavaScript</td><td>Not implemented</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    OpenQBrowser is experimental software. Do not rely on it for everyday
+    browsing yet.
+  </footer>
+</body>
+</html>

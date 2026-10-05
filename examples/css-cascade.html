@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The CSS cascade</title>
+<style>
+  /* Element selector: the weakest kind, specificity 0,0,1. */
+  p { color: #495057; font-family: sans-serif; line-height: 1.6 }
+
+  /* Class selector: specificity 0,1,0, so it beats the element selector. */
+  .notice { color: #b35c00; background: #fff4e6; padding: 10px; border-left: 4px solid #e07a5f }
+
+  /* Id selector: specificity 1,0,0, so it beats the class. */
+  #special { color: #1b4965; background: #e8f1f8 }
+
+  /* !important outranks everything non-important, whatever its specificity. */
+  .forced { color: #2d6a4f !important }
+
+  body { margin: 0; padding: 24px; background: #fdfdfd; color: #222 }
+  h1 { font-size: 28px; margin-top: 0 }
+  h2 { font-size: 18px; margin: 26px 0 8px 0; color: #1b4965 }
+
+  /* Inheritance: children take the parent's colour and font size unless they
+     set their own. */
+  .inherits { color: #7d4e8f; font-size: 18px }
+  .inherits .child { font-weight: bold }
+
+  /* Presentational attributes are treated as author-level hints, so a rule here
+     still wins over the bgcolor attribute on the div below. */
+  .hint-override { background: #e9ecef }
+
+  /* A media query that only applies on a wide viewport. */
+  .responsive { padding: 8px; background: #dee2e6 }
+  @media (min-width: 600px) {
+    .responsive { padding: 20px; background: #b7e4c7 }
+  }
+
+  code { font-family: monospace; background: #f1f3f5; padding: 1px 4px }
+</style>
+</head>
+<body>
+  <h1>The CSS cascade</h1>
+
+  <h2>Specificity</h2>
+  <p class="notice">Class selector: specificity 0,1,0.</p>
+  <p class="notice" id="special">Id selector wins: specificity 1,0,0.</p>
+  <p class="notice" id="special" style="color: #6a040f">An inline style wins over both.</p>
+  <p class="notice forced" id="special">But <code>!important</code> beats the inline style too.</p>
+
+  <h2>Inheritance</h2>
+  <div class="inherits">
+    The parent sets a purple colour and an 18px size.
+    <span class="child">This child inherits both and only adds bold.</span>
+  </div>
+
+  <h2>Presentational attributes</h2>
+  <div class="hint-override" bgcolor="#ffeeee" width="400">
+    The <code>bgcolor</code> attribute is a presentational hint, so the stylesheet
+    rule above wins; the <code>width</code> attribute, which no rule overrides,
+    is applied as a 400 pixel width.
+  </div>
+
+  <h2>Media queries</h2>
+  <div class="responsive">
+    This box has an 8 pixel padding on a narrow viewport and a 20 pixel padding
+    with a green background once the viewport is at least 600 pixels wide.
+  </div>
+
+  <h2>Lengths and units</h2>
+  <div style="font-size: 20px">
+    The parent is 20px.
+    <span style="font-size: 2em">This spans 2em, so 40px.</span>
+    <span style="font-size: 150%">This is 150%, so 30px.</span>
+    <div style="width: 50%; background: #e8f1f8; padding: 8px">
+      A width of 50% is resolved against the containing block.
+    </div>
+  </div>
+</body>
+</html>

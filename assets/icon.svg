@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The OpenQBrowser mark: a stylised browser window with the initial letter. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e5f8a"/>
+      <stop offset="1" stop-color="#133b5c"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Window body -->
+  <rect x="8" y="16" width="112" height="96" rx="12" fill="url(#sky)"/>
+
+  <!-- Title bar with three window buttons -->
+  <rect x="8" y="16" width="112" height="22" rx="12" fill="#0d2739"/>
+  <rect x="8" y="28" width="112" height="10" fill="#0d2739"/>
+  <circle cx="22" cy="27" r="4" fill="#e07a5f"/>
+  <circle cx="34" cy="27" r="4" fill="#f2cc8f"/>
+  <circle cx="46" cy="27" r="4" fill="#81b29a"/>
+
+  <!-- Address bar -->
+  <rect x="60" y="22" width="50" height="10" rx="5" fill="#2c6e9b"/>
+
+  <!-- The letter Q, drawn as a ring with a tail -->
+  <circle cx="62" cy="72" r="20" fill="none" stroke="#ffffff" stroke-width="9"/>
+  <line x1="76" y1="86" x2="90" y2="100" stroke="#ffffff" stroke-width="9"
+        stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Basic layout</title>
+<style>
+  body { margin: 0; font-family: sans-serif; background: #fafafa; color: #222 }
+  .banner { background: #1b4965; color: white; padding: 24px }
+  .banner h1 { margin: 0; font-size: 28px }
+
+  /* Two blocks in normal flow: each starts below the previous one. */
+  .block { background: white; margin: 16px; padding: 16px; border: 1px solid #ccc }
+
+  /* 20px bottom margin here and 20px top margin below collapse to a single
+     20px gap, not 40px. The gap between these two boxes proves it. */
+  .collapsing-a { margin-bottom: 20px; background: #e8f1f8; padding: 12px }
+  .collapsing-b { margin-top: 20px; background: #e8f1f8; padding: 12px }
+
+  /* A fixed width with auto side margins centres the box. */
+  .centred { width: 300px; margin: 16px auto; background: #d9ed92; padding: 12px;
+             text-align: center }
+
+  /* Padding and border sit outside the content box. */
+  .boxed { width: 200px; padding: 20px; border: 4px solid #e07a5f; background: white;
+           margin: 16px }
+</style>
+</head>
+<body>
+  <div class="banner"><h1>Basic layout</h1></div>
+
+  <div class="collapsing-a">This box has a 20px bottom margin.</div>
+  <div class="collapsing-b">This one has a 20px top margin. The gap between them is 20px,
+    because the two margins collapse.</div>
+
+  <div class="centred">300px wide, centred by <code>margin: auto</code>.</div>
+
+  <div class="boxed">200px of content, plus 20px of padding and a 4px border on each side,
+    so the box is 248px across.</div>
+
+  <div class="block">
+    <p>A plain block with a border and padding.</p>
+    <p>Paragraphs are blocks too, so they stack.</p>
+  </div>
+</body>
+</html>

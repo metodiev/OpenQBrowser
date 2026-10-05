@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lists and tables</title>
+<style>
+  body { margin: 0; padding: 24px; font-family: sans-serif; color: #222 }
+  h1 { font-size: 28px; margin-top: 0 }
+  h2 { font-size: 19px; margin: 28px 0 8px 0; color: #1b4965 }
+
+  ul.plain { list-style-type: none; padding-left: 0 }
+  ul.square { list-style-type: square }
+  ol.roman { list-style-type: upper-roman }
+  ol.alpha { list-style-type: lower-alpha }
+  li { margin-bottom: 4px }
+
+  table { border-collapse: collapse }
+  th, td { border: 1px solid #adb5bd; padding: 6px 12px; text-align: left }
+  th { background: #e9ecef; font-weight: bold }
+  caption { margin-bottom: 6px; font-style: italic }
+  td.number { text-align: right }
+</style>
+</head>
+<body>
+  <h1>Lists and tables</h1>
+
+  <h2>Unordered lists</h2>
+  <ul>
+    <li>A disc bullet, the default</li>
+    <li>Another item</li>
+    <li>Nested lists change their marker
+      <ul><li>circle</li><li>then square
+        <ul><li>deep</li></ul>
+      </li></ul>
+    </li>
+  </ul>
+
+  <ul class="square">
+    <li>Square markers</li>
+    <li>Set with <code>list-style-type: square</code></li>
+  </ul>
+
+  <ul class="plain">
+    <li>No markers at all</li>
+    <li>Set with <code>list-style-type: none</code></li>
+  </ul>
+
+  <h2>Ordered lists</h2>
+  <ol>
+    <li>Decimal, the default</li>
+    <li>Second item</li>
+    <li>Third item</li>
+  </ol>
+
+  <ol class="roman">
+    <li>Upper roman</li>
+    <li>Second</li>
+    <li>Third</li>
+  </ol>
+
+  <ol class="alpha" start="3">
+    <li>Lower alpha</li>
+    <li>Second</li>
+  </ol>
+
+  <h2>Tables</h2>
+  <table>
+    <caption>Engine coverage by feature</caption>
+    <thead>
+      <tr><th>Feature</th><th>Status</th><th class="number">Since</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>HTTP/1.1 and HTTPS</td><td>Implemented</td><td class="number">0.1</td></tr>
+      <tr><td>HTML parsing</td><td>Implemented</td><td class="number">0.1</td></tr>
+      <tr><td>CSS cascade</td><td>Implemented</td><td class="number">0.1</td></tr>
+      <tr><td>Block and inline layout</td><td>Implemented</td><td class="number">0.1</td></tr>
+      <tr><td>JavaScript</td><td>Not implemented</td><td class="number">—</td></tr>
+      <tr><td>Flexbox and grid</td><td>Not implemented</td><td class="number">—</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Definition-style content</h2>
+  <dl>
+    <dt>Block formatting context</dt>
+    <dd>A region inside which block boxes are laid out independently.</dd>
+    <dt>Margin collapsing</dt>
+    <dd>Adjacent vertical margins combine into the larger of the two.</dd>
+  </dl>
+</body>
+</html>

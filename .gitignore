@@ -1,0 +1,30 @@
+# Build output
+build/
+build-*/
+out/
+cmake-build-*/
+
+# Qt generated sources
+*_autogen/
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.user
+*.kdev4
+compile_commands.json
+.cache/
+
+# macOS
+.DS_Store
+
+# Local runtime state
+.openqbrowser/
+*.log
+
+# Captures produced by the browser tests
+*.png
+!assets/**/*.png

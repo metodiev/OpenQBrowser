@@ -1,0 +1,13 @@
+function(oqb_add_unit_test name)
+    qt_add_executable(${name} ${name}.cpp)
+    target_link_libraries(${name} PRIVATE oqb_core oqb_project_options Qt6::Test)
+    set_target_properties(${name} PROPERTIES MACOSX_BUNDLE OFF WIN32_EXECUTABLE OFF)
+    add_test(NAME ${name} COMMAND ${name})
+    # Font metrics need a platform plugin; offscreen keeps the tests windowless.
+    set_tests_properties(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endfunction()
+
+oqb_add_unit_test(tst_url)
+oqb_add_unit_test(tst_html)
+oqb_add_unit_test(tst_css)
+oqb_add_unit_test(tst_layout)
