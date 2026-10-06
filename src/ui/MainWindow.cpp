@@ -179,6 +179,7 @@ browser::Tab *MainWindow::addTab()
     auto *tab = new browser::Tab(m_settings, this);
     tab->setHistory(&m_history);
     tab->setBookmarks(&m_bookmarks);
+    tab->setCookieJar(&m_cookies);
     tab->setTabCount(index + 1);
 
     auto *view = new PageView;

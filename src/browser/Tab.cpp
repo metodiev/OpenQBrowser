@@ -57,6 +57,13 @@ void Tab::setHistory(storage::HistoryStore *history)
     m_page->setHistory(history);
 }
 
+void Tab::setCookieJar(storage::CookieJar *cookies)
+{
+    if (!m_page)
+        return;
+    m_page->setCookieJar(cookies);
+}
+
 void Tab::setBookmarks(storage::BookmarkStore *bookmarks)
 {
     m_page->setBookmarks(bookmarks);

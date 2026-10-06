@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <QByteArray>
 #include <QElapsedTimer>
 #include <QObject>
@@ -48,6 +50,18 @@ public:
 
     bool isRunning() const { return m_state != State::Idle; }
 
+    /// Supplies the `Cookie` header for a URL, or an empty string for none.
+    ///
+    /// A redirect chain is followed inside this class, so no caller sees the
+    /// intermediate requests. Without this, the `Cookie` header built for the
+    /// first hop would simply be copied onto every later hop - sending a cookie
+    /// to a host the jar would refuse, and omitting one a redirect just set.
+    /// The provider is asked afresh for each hop instead.
+    using CookieProvider = std::function<QString(const Url &url)>;
+
+    /// Sets the provider used to build `Cookie` headers after a redirect.
+    void setCookieProvider(CookieProvider provider) { m_cookieProvider = std::move(provider); }
+
     /// The URL of the request currently in flight, for the status bar.
     Url currentUrl() const { return m_pending.url; }
 
@@ -61,6 +75,12 @@ signals:
     void failed(const QString &error);
     /// Emitted after every redirect hop, so the UI can show the real progress.
     void redirected(const oqb::network::Url &from, const oqb::network::Url &to);
+    /// Emitted for a redirect response before the next hop is sent.
+    ///
+    /// A redirect response never reaches finished(), so this is the only place
+    /// its headers can be seen - and its `Set-Cookie` headers are the reason it
+    /// has to be seen at all.
+    void redirectResponse(const oqb::network::HttpResponse &response);
     /// Emitted as the body grows, for the loading progress indicator.
     void progress(qint64 receivedBytes, qint64 expectedBytes);
     /// Emitted once the socket is connected, before any bytes are sent.
@@ -113,6 +133,7 @@ private:
     int m_redirectCount = 0;
     int m_redirectsForOriginal = 0;
     qint64 m_lastProgressEmitted = 0;
+    CookieProvider m_cookieProvider;
 };
 
 } // namespace oqb::network

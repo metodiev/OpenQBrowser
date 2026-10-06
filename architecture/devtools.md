@@ -108,25 +108,53 @@ The element tree is also rebuilt when a script may have altered the document,
 because a script can insert or remove elements without changing the document
 object at all.
 
+## The cookie view
+
+The **Cookies** tab lists every cookie in the window's jar, one per line, with the
+domain, path, expiry and the traits that were set (`Secure`, `HttpOnly`,
+`SameSite`). Each line starts with a marker:
+
+* a space means the jar would send this cookie to the page on screen;
+* `!` means it would not.
+
+The marker is worked out by asking the jar which cookies it would send to the
+current URL, rather than by re-deriving the matching rule in the panel. The rule
+involves the host, the path, expiry and the scheme, and a second implementation of
+it in a view would be one that could disagree with the code that actually sends
+requests.
+
+The whole jar is shown, not a list filtered to the current host, and the `!` marker
+is what makes that readable. A jar belongs to the window rather than to a
+document, so it holds cookies for hosts the page on screen has nothing to do
+with — and the cookie a third party set, which is the one a reader opens this tab
+to find, is exactly the one a host-filtered view would hide. The `!` marker turns
+that into a question the view answers instead of one it raises.
+
 ## Tests
 
-`tests/browser/tst_devtools.cpp` covers the panel in thirteen cases, driven
+`tests/browser/tst_devtools.cpp` covers the panel in fifteen cases, driven
 through a real window and a real load: the tree's shape and labels, selecting an
 element and reading its style and rules, evaluating expressions and seeing their
 values, reporting errors, reading the page's DOM from the console, showing the
 page's own `console.log` output, the layout summary, the resource list, following
-a navigation, picking an element, and surviving the element it was showing being
-removed by a script.
+a navigation, picking an element, surviving the element it was showing being
+removed by a script, and the cookie view in both its marked and unmarked states.
 
 The panel's widgets carry object names (`consoleOutput`, `consoleInput`,
-`elementTree`, `computedStyle`, `appliedRules`, `layoutReport`,
-`resourceReport`), which is what lets a test address a specific view rather than
+`elementTree`, `computedStyle`, `appliedRules`, `layoutReport`, `resourceReport`,
+`cookieJar`), which is what lets a test address a specific view rather than
 whichever `findChild` returns first. Two of the failures those tests caught were
 of exactly that kind: a test reading the network view while believing it read the
 console.
+
+The cookie tests need a page on a real host, because a `file://` document can
+neither set nor receive a cookie. They run against a loopback server so that both
+marker states are exercised: a test that only ever saw `!` could not tell the
+marker apart from a constant.
 
 ## See also
 
 - [javascript.md](javascript.md) for the engine the console evaluates in
 - [rendering.md](rendering.md) for the box tree the picker walks
+- [storage.md](storage.md) for the cookie jar the Cookies tab shows
 - [testing.md](testing.md) for how to run the suites

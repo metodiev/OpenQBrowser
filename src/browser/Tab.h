@@ -53,6 +53,9 @@ public:
 
     void setHistory(storage::HistoryStore *history);
     void setBookmarks(storage::BookmarkStore *bookmarks);
+
+    /// The shared cookie jar, so a session follows the user between tabs.
+    void setCookieJar(storage::CookieJar *cookies);
     void setTabCount(int count) { m_page->setTabCount(count); }
 
 signals:

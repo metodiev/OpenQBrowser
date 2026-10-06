@@ -8,6 +8,7 @@
 #include "browser/Page.h"
 #include "browser/Tab.h"
 #include "devtools/Inspector.h"
+#include "storage/Cookies.h"
 #include "ui/MainWindow.h"
 
 // The OpenQBrowser entry point.
@@ -319,6 +320,13 @@ int main(int argc, char **argv)
     settings.loadImages = !parser.isSet(available.noImages);
 
     oqb::browser::Page page(settings);
+
+    // The headless page gets a jar of its own. Without one a redirect that sets a
+    // cookie loses it, and the follow-up request goes out without the session -
+    // which is exactly the case a report is asked for when a site behaves
+    // differently than expected.
+    oqb::storage::CookieJar cookies;
+    page.setCookieJar(&cookies);
 
     if (options.window) {
         // The window owns its own tabs and pages, so the standalone Page above

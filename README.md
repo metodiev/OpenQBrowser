@@ -37,8 +37,9 @@ What works today:
 | Positioning | `relative`, `absolute`, `fixed` and `sticky`, with offsets and `z-index` |
 | JavaScript | QuickJS embedded: the DOM bindings, events and timers; inline, external, `defer` and `async` scripts |
 | Browser | Tabs, back/forward history, bookmarks, built-in `about:` pages |
-| DevTools | Console that evaluates in the page, element tree with computed style and applied rules, element picker, layout and resource views |
-| Testing | Twelve test suites, all passing |
+| Cookies | A cookie jar: `Set-Cookie` parsing, host and path scoping, expiry, `Secure`, `HttpOnly`, `SameSite` |
+| DevTools | Console that evaluates in the page, element tree with computed style and applied rules, element picker, layout, resource and cookie views |
+| Testing | Fourteen test suites, all passing |
 
 What does not work yet, and what you will observe:
 
@@ -47,7 +48,7 @@ What does not work yet, and what you will observe:
 | Modules, `fetch` | `<script type="module">` is skipped, and `fetch`/`XMLHttpRequest` are absent. See [architecture/javascript.md](./architecture/javascript.md). |
 | Floats and CSS grid | `float` has no effect, and `display: grid` is laid out as blocks. Flexbox and positioning work. |
 | Forms | Rendered and styled, but nothing is submitted. |
-| Cookies, cache | Not implemented; nothing is stored between runs. |
+| Persistence | Cookies work but are held in memory; nothing — cookies, history or bookmarks — is stored between runs. |
 | Sandboxing | No process isolation or site isolation. |
 
 ## Building

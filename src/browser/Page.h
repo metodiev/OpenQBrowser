@@ -18,6 +18,7 @@
 #include "network/ResourceLoader.h"
 #include "renderer/Layout.h"
 #include "storage/Bookmarks.h"
+#include "storage/Cookies.h"
 #include "storage/History.h"
 
 namespace oqb::renderer {
@@ -114,6 +115,15 @@ public:
     /// resolve about: pages against live data.
     void setHistory(storage::HistoryStore *history) { m_history = history; }
     void setBookmarks(storage::BookmarkStore *bookmarks) { m_bookmarks = bookmarks; }
+
+    /// The cookie jar this page's requests read from and write to.
+    ///
+    /// The jar is shared by every tab, because that is what makes a session
+    /// outlive a navigation and follow a user between tabs. A null jar means the
+    /// page uses no cookies at all, which is what a Page built on its own gets.
+    void setCookieJar(storage::CookieJar *cookies);
+    /// The jar this page's requests consult, or null when none was set.
+    storage::CookieJar *cookieJar() const { return m_cookies; }
 
     /// The number of open tabs, used by the new tab page's summary line.
     void setTabCount(int count) { m_tabCount = qMax(1, count); }
@@ -247,6 +257,7 @@ private:
 
     storage::HistoryStore *m_history = nullptr;
     storage::BookmarkStore *m_bookmarks = nullptr;
+    storage::CookieJar *m_cookies = nullptr;
     int m_tabCount = 1;
 
     /// The document's own URL, used to resolve relative references in the page.

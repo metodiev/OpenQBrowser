@@ -10,13 +10,61 @@
 #include <QTemporaryDir>
 #include <QTreeWidget>
 
+#include <QTcpServer>
+#include <QTcpSocket>
+
 #include "browser/Tab.h"
 #include "dom/Document.h"
+#include "storage/Cookies.h"
 #include "ui/DevToolsPanel.h"
 #include "ui/MainWindow.h"
 #include "ui/PageView.h"
 
 using namespace oqb;
+
+/// A loopback server that answers every request with the same body and a cookie.
+///
+/// The panel's cookie view distinguishes cookies that apply to the page on
+/// screen from ones that do not, and only a real http:// page has a host that can
+/// receive one. A file:// document cannot, so the positive case needs a socket.
+class LoopbackServer : public QTcpServer
+{
+    Q_OBJECT
+
+public:
+    explicit LoopbackServer(const QByteArray &body, QObject *parent = nullptr)
+        : QTcpServer(parent)
+        , m_body(body)
+    {
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, socket, [this, socket] {
+                    socket->readAll();
+                    QByteArray response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                                          "Set-Cookie: fromserver=1; Path=/\r\n"
+                                          "Content-Length: ";
+                    response += QByteArray::number(m_body.size());
+                    response += "\r\nConnection: close\r\n\r\n";
+                    response += m_body;
+                    socket->write(response);
+                    socket->disconnectFromHost();
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+    }
+
+    bool start() { return listen(QHostAddress::LocalHost, 0); }
+
+    network::Url urlFor(const QString &path) const
+    {
+        return network::Url::parse(
+            QStringLiteral("http://127.0.0.1:%1%2").arg(serverPort()).arg(path));
+    }
+
+private:
+    QByteArray m_body;
+};
 
 /// Tests for the developer tools panel.
 ///
@@ -44,6 +92,8 @@ private slots:
     void followsTheTabAndClearsOnNavigation();
     void picksAnElementFromThePage();
     void survivesAnElementRemovedAfterSelection();
+    void showsTheCookieJar();
+    void marksCookiesThatDoNotApplyToThePage();
 
 private:
     /// Loads `html` in a tab of its own and returns the panel.
@@ -467,3 +517,85 @@ void DevToolsTest::survivesAnElementRemovedAfterSelection()
 
 QTEST_MAIN(DevToolsTest)
 #include "tst_devtools.moc"
+
+void DevToolsTest::showsTheCookieJar()
+{
+    auto *panel = loadPage(QStringLiteral("<html><body>cookies</body></html>"));
+    QVERIFY(panel != nullptr);
+
+    auto *jarView = panel->findChild<QPlainTextEdit *>(QStringLiteral("cookieJar"));
+    QVERIFY(jarView != nullptr);
+
+    // A file:// page can neither set nor receive a cookie, so the jar the window
+    // owns is reached through the tab's page and filled directly. The view is
+    // about the jar's contents, and those are the same however they arrived.
+    browser::Tab *tab = currentTab();
+    QVERIFY(tab != nullptr);
+    storage::CookieJar *jar = tab->page()->cookieJar();
+    QVERIFY(jar != nullptr);
+    QVERIFY(jar->isEmpty());
+
+    // An empty jar says so rather than showing a bare header.
+    QVERIFY2(jarView->toPlainText().contains(QLatin1String("No cookies stored")),
+             qPrintable(jarView->toPlainText()));
+
+    jar->store(QStringLiteral("session=abc; Path=/; HttpOnly; SameSite=Lax"),
+               network::Url::parse(QStringLiteral("https://example.com/")));
+    QCOMPARE(jar->count(), 1);
+
+    panel->refresh();
+    const QString text = jarView->toPlainText();
+    QVERIFY2(text.contains(QLatin1String("session=abc")), qPrintable(text));
+    // The traits are what a user opens the tab to read, so they are shown.
+    QVERIFY2(text.contains(QLatin1String("HttpOnly")), qPrintable(text));
+    QVERIFY2(text.contains(QLatin1String("SameSite=Lax")), qPrintable(text));
+    QVERIFY2(text.contains(QLatin1String("example.com")), qPrintable(text));
+}
+
+void DevToolsTest::marksCookiesThatDoNotApplyToThePage()
+{
+    auto *server = new LoopbackServer("<html><body>scope</body></html>", this);
+    QVERIFY(server->start());
+
+    m_window->openInNewTab(server->urlFor(QStringLiteral("/")));
+    browser::Tab *tab = currentTab();
+    QVERIFY(tab != nullptr);
+    QVERIFY(waitForLoad(tab));
+    m_panel->setTab(tab);
+    m_panel->setPageView(viewForTab(tab));
+    m_panel->refresh();
+
+    storage::CookieJar *jar = tab->page()->cookieJar();
+    QVERIFY(jar != nullptr);
+
+    // The server set a cookie for the page's own host, so that one applies. A
+    // second cookie is added for an unrelated host, which is the case the view
+    // has to distinguish - a jar belongs to the window, so it holds cookies the
+    // page on screen will never send.
+    QVERIFY2(jar->count() >= 1, "the loopback server's cookie was not stored");
+    jar->store(QStringLiteral("theirs=1; Path=/"),
+               network::Url::parse(QStringLiteral("https://tracker.example/")));
+
+    m_panel->refresh();
+
+    auto *jarView = m_panel->findChild<QPlainTextEdit *>(QStringLiteral("cookieJar"));
+    QVERIFY(jarView != nullptr);
+
+    QString applying;
+    QString notApplying;
+    for (const QString &line : jarView->toPlainText().split(u'\n')) {
+        if (line.contains(QLatin1String("fromserver=1")))
+            applying = line;
+        if (line.contains(QLatin1String("theirs=1")))
+            notApplying = line;
+    }
+
+    QVERIFY2(!applying.isEmpty(), qPrintable(jarView->toPlainText()));
+    QVERIFY2(!notApplying.isEmpty(), qPrintable(jarView->toPlainText()));
+
+    // The cookie for the page's own host is sent, so it is not flagged; the one
+    // for another host is not, so it is. Both branches are exercised, which a
+    // test that only ever saw "!" could not tell from a hardcoded marker.
+    QVERIFY2(!applying.startsWith(QLatin1String("!")), qPrintable(applying));
+    QVERIFY2(notApplying.startsWith(QLatin1String("!")), qPrintable(notApplying));
+}

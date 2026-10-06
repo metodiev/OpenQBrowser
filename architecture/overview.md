@@ -76,7 +76,7 @@ parsed and re-run through the CSS and layout stages; see `browser.md`.
 | `src/html` | `html/Tokenizer.h`, `html/Parser.h`, `html/Entities.h` | Tokenizer, character references, tree construction. |
 | `src/css` | `css/Tokenizer.h`, `css/Selector.h`, `css/Value.h`, `css/Stylesheet.h`, `css/Style.h` | Tokenizer, value model, selectors, stylesheet parsing, media queries, cascade. |
 | `src/renderer` | `renderer/BoxTree.h`, `Layout.h`, `Painter.h` | Box tree, layout, painting. |
-| `src/storage` | `storage/History.h`, `storage/Bookmarks.h` | History list with a cursor; bookmark list. |
+| `src/storage` | `storage/History.h`, `storage/Bookmarks.h`, `storage/Cookies.h` | History list with a cursor; bookmark list; a cookie jar with RFC 6265 rules. |
 | `src/security` | `security/SecurityPolicy.h` | Origin checks, subresource downgrade rules, permissions, transport security. |
 | `src/javascript` | `javascript/ScriptEngine.h`, `Engine.h`, `Bindings.h` | The embedded QuickJS engine, its DOM bindings, events and timers. |
 | `src/devtools` | `devtools/Inspector.h` | Text views of the DOM, styles, box tree and layout. |
@@ -103,7 +103,7 @@ Concretely:
   `dom::Document`.
 * `renderer/BoxTree.h` includes `css/Style.h` and `dom/Node.h`.
 * `browser/Page.h` includes all of the above plus `javascript/ScriptEngine.h`,
-  `storage/History.h` and `storage/Bookmarks.h`.
+  `storage/History.h`, `storage/Bookmarks.h` and `storage/Cookies.h`.
 * `ui/PageView.h` includes `network/Url.h` and forward-declares `browser::Tab`.
 
 The rule has two payoffs. First, `oqb_core` has no windowing dependency, so a page

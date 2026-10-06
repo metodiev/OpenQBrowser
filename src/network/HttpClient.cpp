@@ -410,6 +410,11 @@ void HttpClient::fail(const QString &message)
 
 void HttpClient::handleRedirect(const HttpResponse &response)
 {
+    // The redirect response is reported first, before anything can fail: it was
+    // received, so its Set-Cookie headers are real regardless of what happens to
+    // the hop that follows.
+    emit redirectResponse(response);
+
     const Url target = response.location();
     if (!target.isValid() || !isHttpLikeScheme(target)) {
         fail(tr("Redirect to an unsupported location: %1").arg(response.header(QStringLiteral("Location"))));
@@ -445,6 +450,17 @@ void HttpClient::handleRedirect(const HttpResponse &response)
     if (target.host() != m_pending.url.host()) {
         next.headers.remove(QStringLiteral("Authorization"));
         next.headers.remove(QStringLiteral("Cookie"));
+    }
+
+    // The Cookie header is rebuilt from scratch for the hop that is about to be
+    // sent. The redirect may have set a cookie, or moved to a host the jar holds
+    // nothing for, so the header that suited the previous hop is not the header
+    // that suits this one. Browsers re-ask the jar here for the same reason.
+    next.headers.remove(QStringLiteral("Cookie"));
+    if (m_cookieProvider) {
+        const QString header = m_cookieProvider(target);
+        if (!header.isEmpty())
+            next.headers.set(QStringLiteral("Cookie"), header);
     }
 
     // Any bytes already buffered belong to the redirect response, not to the

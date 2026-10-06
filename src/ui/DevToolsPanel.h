@@ -122,6 +122,7 @@ private:
     // Layout and network.
     QPlainTextEdit *m_layoutView = nullptr;
     QPlainTextEdit *m_networkView = nullptr;
+    QPlainTextEdit *m_cookieView = nullptr;
 
     QPushButton *m_pickButton = nullptr;
     /// How many console entries the view currently shows, and which document

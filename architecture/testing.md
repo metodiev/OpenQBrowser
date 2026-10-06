@@ -1,16 +1,16 @@
 # Testing
 
 OpenQBrowser has three test suites — unit, integration and browser — containing
-twelve QTest-based targets, all registered with CTest from `tests/CMakeLists.txt`:
+fourteen QTest-based targets, all registered with CTest from `tests/CMakeLists.txt`:
 
 | Suite | Directory | Targets | Contents |
 | --- | --- | --- | --- |
-| Unit | `tests/unit/` | `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript` | One component each, in isolation; `tst_javascript` runs real scripts against a real parsed document. |
-| Integration | `tests/integration/` | `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting` | Several components together, including real loopback HTTP; `tst_scripting` drives scripted pages through the load pipeline. |
+| Unit | `tests/unit/` | `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript`, `tst_cookies` | One component each, in isolation; `tst_javascript` runs real scripts against a real parsed document. |
+| Integration | `tests/integration/` | `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting`, `tst_cookie_flow` | Several components together, including real loopback HTTP; `tst_scripting` drives scripted pages through the load pipeline. |
 | Browser | `tests/browser/` | `tst_browser`, `tst_devtools` | The window, its tabs and user-level navigation, and the developer tools panel. |
 
-Every target links `oqb_core` (and `tst_browser` additionally links `oqb_ui` and
-`Qt6::Widgets`), is built as a plain console executable
+Every target links `oqb_core` (and `tst_browser` and `tst_devtools` additionally
+link `oqb_ui` and `Qt6::Widgets`), is built as a plain console executable
 (`MACOSX_BUNDLE OFF`, `WIN32_EXECUTABLE OFF`) and runs with
 `QT_QPA_PLATFORM=offscreen`, which the CMake files set as a test property rather
 than leaving to the caller.
@@ -18,10 +18,12 @@ than leaving to the caller.
 ```
 tests/
   CMakeLists.txt
-  unit/          CMakeLists.txt, tst_url.cpp, tst_html.cpp, tst_css.cpp, tst_layout.cpp
+  unit/          CMakeLists.txt, tst_url.cpp, tst_html.cpp, tst_css.cpp,
+                 tst_layout.cpp, tst_javascript.cpp, tst_cookies.cpp
   integration/   CMakeLists.txt, tst_http.cpp, tst_pipeline.cpp,
-                 tst_redirect.cpp, tst_perf.cpp
-  browser/       CMakeLists.txt, tst_browser.cpp
+                 tst_redirect.cpp, tst_perf.cpp, tst_scripting.cpp,
+                 tst_cookie_flow.cpp
+  browser/       CMakeLists.txt, tst_browser.cpp, tst_devtools.cpp
   fixtures/      (empty; reserved for test data)
 ```
 
@@ -78,6 +80,18 @@ of `margin: 0 auto` inside `body`'s 8px margin), `collapsesAdjacentMargins`,
 `wrapsLongTextIntoLines`, `laysOutInlineElements`, `honoursLineHeight`,
 `positionsListMarkers`, `sizesReplacedElements`, `growsDocumentHeightWithContent`,
 `paintsBackgroundColours`, `paintsTextPixels` and `cullsOffscreenContent`.
+
+### `tests/unit/tst_cookies.cpp`
+
+Covers `CookieJar` and the RFC 6265 rules directly, with no socket and no loader.
+It is the suite that states the rules as rules: a cookie is set with an
+unacceptable `Domain` and the test asserts the jar is **unchanged** rather than that
+the cookie was narrowed; a `Path` is set and a sibling path is shown not to match;
+`Max-Age` is set to beat a later `Expires`; an expired cookie is asserted to be a
+deletion rather than an error. It also pins the two mistakes that are easy to make
+in either direction: `127.0.0.1` may not set a cookie for `0.0.1`, and a value
+containing a semicolon ends the cookie at the semicolon, so `bad=va;lue` stores
+`bad=va`.
 
 ## Integration suite
 
@@ -161,6 +175,16 @@ viewport, plus a `countPixels()` template used to assert what was drawn. Cases:
 `survivesMalformedMarkup`. This is the suite that catches a regression in how the
 stages fit together rather than in one stage.
 
+### `tests/integration/tst_cookie_flow.cpp`
+
+Covers the wiring over a loopback server: that a cookie the server sets comes back
+on the next request, that no header is sent when the jar has nothing, that a
+redirect's cookie survives even though a redirect response never reaches
+`finished()`, that a **relative** `Location` is resolved before the cookie is sent
+(the shape a real site uses), that a cookie set for `127.0.0.1` is not sent to
+`localhost`, and that each hop of a redirect chain gets a `Cookie` header derived
+afresh rather than the one built for the first hop.
+
 ## Browser suite
 
 `tests/browser/tst_browser.cpp` drives the browser the way a user does, through
@@ -173,6 +197,15 @@ helper that spins `QCoreApplication::processEvents()` until the tab reports
 `newTabKeepsItsOwnPage`, `addressBarInputBecomesSearch`,
 `errorPageIsShownForAFailedLoad`, `pageViewScrollsWithinTheDocument`,
 `pageViewFindsLinksUnderTheCursor` and `titleFollowsTheDocument`.
+
+`tests/browser/tst_devtools.cpp` drives the panel through a real window and a real
+load: the element tree's shape and labels, selecting an element and reading its
+computed style and applied rules, evaluating expressions and reporting errors,
+showing the page's own `console.log` output, the layout summary, the resource list,
+following a navigation, picking an element from the page, surviving the element it
+was showing being removed by a script, and the cookie view. Its cookie cases run
+against a loopback server, because a `file://` document cannot set or receive a
+cookie and the positive branch of the view's marker would otherwise never execute.
 
 ## The offscreen platform requirement
 

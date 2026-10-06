@@ -1,5 +1,8 @@
 #include "network/ResourceLoader.h"
 
+#include "security/SecurityPolicy.h"
+#include "storage/Cookies.h"
+
 #include "network/HttpClient.h"
 
 #include <QFile>
@@ -97,6 +100,43 @@ void ResourceLoader::pump()
         startRequest(m_queue.takeFirst());
 }
 
+void ResourceLoader::applyCookies(HttpRequest *request, const Url &referrer) const
+{
+    if (!m_cookies || !request)
+        return;
+
+    // The policy decides whether sending a cookie is acceptable, which is where
+    // the SameSite rule and the secure-origin rule are enforced. A refused
+    // request sends no cookie at all rather than a partial set, because a server
+    // that receives half a session is worse off than one that receives none.
+    if (referrer.isValid()) {
+        const security::SecurityPolicy policy;
+        if (!policy.canSendCookies(referrer, request->url).allowed)
+            return;
+    }
+
+    const QString header = m_cookies->requestHeader(request->url);
+    if (header.isEmpty())
+        return;
+
+    // set() rather than append(): a caller may have supplied a Cookie of its own,
+    // and two Cookie headers are not equivalent to one.
+    request->headers.set(QStringLiteral("Cookie"), header);
+}
+
+void ResourceLoader::absorbCookies(const HttpResponse &response, const Url &url)
+{
+    if (!m_cookies)
+        return;
+
+    // The cookies are stored against the URL the response came from, not the URL
+    // that was requested: after a redirect the server that sent Set-Cookie is the
+    // one at the final address, and those are the host and path the cookie
+    // belongs to.
+    const Url &source = response.finalUrl.isValid() ? response.finalUrl : url;
+    m_cookies->storeFromHeaders(response.headers, source);
+}
+
 void ResourceLoader::startRequest(const PendingRequest &request)
 {
     // Another request for the same URL may have completed while this one waited.
@@ -126,9 +166,33 @@ void ResourceLoader::startRequest(const PendingRequest &request)
         pump();
     });
 
+    // A redirect response is followed inside HttpClient, so it never reaches
+    // handleHttpResponse(). Its Set-Cookie headers still matter: a login that
+    // redirects to the dashboard sets the session on the hop that is discarded.
+    connect(client, &HttpClient::redirectResponse, this,
+            [this, client](const HttpResponse &response) {
+                absorbCookies(response, m_clients.value(client));
+            });
+
+    // Each hop asks the jar afresh which cookies belong on the request, because
+    // the hop that just completed may have changed the answer. The referrer is
+    // the original one: a redirect does not change what the navigation is, so
+    // the SameSite decision must be made against the same context throughout.
+    const Url referrer = request.referrer.isEmpty() ? Url() : Url::parse(request.referrer);
+    client->setCookieProvider([this, referrer](const Url &url) {
+        HttpRequest probe;
+        probe.url = url;
+        applyCookies(&probe, referrer);
+        return probe.headers.joined(QStringLiteral("Cookie"));
+    });
+
     HttpRequest httpRequest;
     httpRequest.url = request.url;
     httpRequest.userAgent = m_userAgent;
+    // The referrer is the page that asked for the resource, and it is what the
+    // SameSite decision is made against. It arrives as text, so it is parsed;
+    // an unparseable or absent referrer is treated as no referrer.
+    applyCookies(&httpRequest, referrer);
     // Without this the timeout on PageSettings would be a setting that does
     // nothing, and a server that never answers would hang the page forever.
     httpRequest.timeoutMs = m_requestTimeoutMs;
@@ -143,6 +207,11 @@ void ResourceLoader::startRequest(const PendingRequest &request)
 
 void ResourceLoader::handleHttpResponse(const Url &url, const HttpResponse &response)
 {
+    // Cookies are stored before anything else, because a response that is about
+    // to be discarded as an error still sets them - which is how a server reports
+    // a failed login.
+    absorbCookies(response, url);
+
     Resource resource;
     resource.requestedUrl = url;
     resource.url = response.finalUrl.isValid() ? response.finalUrl : url;

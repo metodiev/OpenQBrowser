@@ -73,6 +73,7 @@ add_library(oqb_core STATIC
     renderer/Painter.cpp
     storage/History.cpp
     storage/Bookmarks.cpp
+    storage/Cookies.cpp
     security/SecurityPolicy.cpp
     javascript/ScriptEngine.cpp
     javascript/Engine.cpp

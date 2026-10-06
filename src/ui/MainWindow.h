@@ -5,6 +5,7 @@
 
 #include "browser/PageSettings.h"
 #include "storage/Bookmarks.h"
+#include "storage/Cookies.h"
 #include "storage/History.h"
 
 class QAction;
@@ -70,6 +71,9 @@ private:
     browser::PageSettings m_settings;
     storage::HistoryStore m_history;
     storage::BookmarkStore m_bookmarks;
+    /// One jar for the whole window, so a login in one tab is sent by every tab
+    /// and survives a navigation.
+    storage::CookieJar m_cookies;
 
     QTabWidget *m_tabs = nullptr;
     QLineEdit *m_addressBar = nullptr;

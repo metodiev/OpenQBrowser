@@ -80,7 +80,7 @@ implemented and **not yet called** from the pipeline:
 | `checkTopLevelNavigation()` | `Page::buildDocument()` |
 | `canLoadSubresource()` | none |
 | `canNavigate()` | none |
-| `canSendCookies()` | none |
+| `canSendCookies()` | `ResourceLoader::applyCookies()`, and the cookie provider for each redirect hop |
 | `canUseFeature()` | none |
 | `sameOrigin()`, `originKey()`, `isSchemeAllowed()` | none |
 
@@ -125,24 +125,47 @@ produce the same origin string and compare equal.
 
 ## Cookies
 
-Cookies are not implemented. There is no cookie jar, no `Set-Cookie` parsing, no
-persistence, and nothing ever adds a `Cookie` request header in `ResourceLoader`.
-The two rules that exist are the two that matter for the missing feature and are
-both in code:
+A cookie jar exists in `src/storage/Cookies.{h,cpp}` and is described in
+[storage.md](storage.md#what-exists-cookies). It is in memory only, so every cookie
+dies with the process, and it honours the rules RFC 6265 lays down — `Domain`
+refusal rather than narrowing, `Path` boundary matching, `Max-Age` over `Expires`,
+`Secure` limited to `https`, and `HttpOnly` recorded.
+
+The two rules that mattered while the jar was missing are still the two that carry
+the security weight, and both are now reachable from the request path:
 
 * `HttpClient::handleRedirect()` removes `Cookie` **and** `Authorization` from the
-  outgoing headers when a redirect crosses to a different host. Credentials must
-  never leak to another origin, and once a jar exists this removal becomes the only
-  place a redirect needs to be handled.
+  outgoing headers when a redirect crosses to a different host, and then re-derives
+  the `Cookie` header from the jar for the new host through the cookie provider. So
+  a cross-host hop neither carries the old host's credentials nor picks up the new
+  host's cookies by accident: it gets exactly what the jar says the new host
+  should get.
 * `SecurityPolicy::canSendCookies(from, to)` refuses to send cookies to an insecure
   origin: when the two URLs are not the same origin and the target is `http` while
   the source is `https`, the decision is "refusing to send cookies to an insecure
-  origin". That is the simplest useful form of the `SameSite=Lax` default, and its
-  comment says so.
+  origin". `ResourceLoader::applyCookies()` calls this before building the header,
+  and a refusal sends **no** cookie at all rather than a partial set, because a
+  server that receives half a session is worse off than one that receives none.
 
-Both are enforced structurally (the header is removed) or by policy (the decision
-exists and is documented). Neither is reachable from the current request path,
-because no code builds a `Cookie` header in the first place.
+`Remote-host` cookies are scoped by host, not by address. `127.0.0.1` and
+`localhost` are different hosts as far as the jar is concerned even though they
+reach the same machine, which is the case `tst_cookie_flow.cpp` pins.
+
+### What is not protected
+
+The jar is deliberately explicit about its limits:
+
+* **No `SameSite` request context beyond the referrer.** `SameSite=Strict` and
+  `Lax` are parsed and recorded, and a cross-origin request with no referrer is
+  treated as no referrer rather than as a site. There is no registrable-domain
+  ("site") computation, so the distinction between same-site and same-origin is not
+  made; the conservative reading is the one taken.
+* **No third-party cookie policy and no partitioning.** Every cookie the jar holds
+  for a host is offered to that host whether the request is first- or third-party.
+* **No `document.cookie`.** This is a limitation of the JavaScript bindings, but it
+  also means `HttpOnly` cannot be bypassed by script, because no script can read a
+  cookie at all.
+* **No persistence**, so there is no cookie the user cannot clear by restarting.
 
 ## Denial by default for permissions
 
@@ -184,7 +207,7 @@ the intended posture.
 | Secure → insecure page loads | `SecurityPolicy::canLoadSubresource()` (implemented; not yet called from the loader). |
 | HSTS-style no-downgrade | `SecurityPolicy::m_enforceHsts`, `rememberSecureHost()`, `isSecureHost()` (in-memory only). |
 | Credential stripping on redirect | `HttpClient::handleRedirect()`. |
-| Cookies across origins | `SecurityPolicy::canSendCookies()` (implemented; no cookie jar exists). |
+| Cookies across origins | `SecurityPolicy::canSendCookies()` from `ResourceLoader::applyCookies()`; `HttpClient::handleRedirect()` strips and re-derives the header per hop. |
 | Permissions | `SecurityPolicy::canUseFeature()` (deny-all). |
 | Top-level navigation filter | `SecurityPolicy::checkTopLevelNavigation()` in `Page::buildDocument()`. |
 | Request limits that bound hostile input | `HttpClient::kMaxBodyBytes` (64 MiB), the 512 KiB header cap, `Page::kMaxSubresources` (200), `ParseOptions::maxDepth` (400). |
@@ -208,8 +231,10 @@ much memory and how much work a single hostile or broken server can cause.
   the wiring does not.
 * **HSTS header handling, certificate pinning, CT, and a trust-on-first-use
   policy.** None exist.
-* **Cookies, storage partitioning, third-party cookie policy, private browsing.**
-  None exist; `storage.md` describes the plan.
+* **Storage partitioning, third-party cookie policy, and private browsing.**
+  None exist. A cookie jar does, but it is one jar for the whole window: a
+  third-party request gets whatever the jar holds for its host. Private browsing is
+  approximated only by `HistoryStore::clear()`.
 * **Subresource integrity, CORS, referrer policy.** Not implemented. A `Referer`
   header is sent (`ResourceLoader::startRequest()` adds the document URL as
   `Referer` for subresources) with no policy controlling it beyond that.

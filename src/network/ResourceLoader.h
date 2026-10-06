@@ -9,6 +9,10 @@
 #include "network/HttpMessage.h"
 #include "network/Url.h"
 
+namespace oqb::storage {
+class CookieJar;
+}
+
 namespace oqb::network {
 
 class HttpClient;
@@ -71,6 +75,15 @@ public:
 
     void setUserAgent(const QString &userAgent) { m_userAgent = userAgent; }
 
+    /// The cookie jar requests read from and responses write to.
+    ///
+    /// The jar is owned by the browser rather than by the loader, because it has
+    /// to outlive a single page: that is what makes a login survive a
+    /// navigation. A null jar means no cookies are sent or stored, which is what
+    /// a loader built on its own gets.
+    void setCookieJar(storage::CookieJar *jar) { m_cookies = jar; }
+    storage::CookieJar *cookieJar() const { return m_cookies; }
+
     /// Milliseconds before a request is abandoned; 0 disables the timeout.
     void setRequestTimeout(int milliseconds) { m_requestTimeoutMs = milliseconds; }
 
@@ -92,12 +105,20 @@ private:
     void handleHttpResponse(const Url &url, const HttpResponse &response);
     void handleFailure(const Url &url, const QString &error);
 
+    /// Adds the `Cookie` header for `request` from the jar, and refuses to add
+    /// one the security policy would block.
+    void applyCookies(HttpRequest *request, const Url &referrer) const;
+    /// Stores the cookies a response set.
+    void absorbCookies(const HttpResponse &response, const Url &url);
+
     QHash<QString, Resource> m_cache;
     QList<PendingRequest> m_queue;
     QHash<HttpClient *, Url> m_clients;
     int m_maxConcurrent = 6;
     int m_requestTimeoutMs = 30000;
     int m_requestCount = 0;
+    /// Not owned. Null means cookies are disabled for this loader.
+    storage::CookieJar *m_cookies = nullptr;
     QString m_userAgent;
 };
 

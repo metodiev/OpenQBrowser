@@ -27,7 +27,7 @@
 #include "javascript/ScriptEngine.h"
 #include "renderer/BoxTree.h"
 #include "renderer/Layout.h"
-#include "renderer/Layout.h"
+#include "storage/Cookies.h"
 #include "ui/PageView.h"
 
 namespace oqb::ui {
@@ -182,6 +182,13 @@ DevToolsPanel::DevToolsPanel(QWidget *parent)
     m_networkView->setLineWrapMode(QPlainTextEdit::NoWrap);
     m_tabs->addTab(m_networkView, QStringLiteral("Network"));
 
+    m_cookieView = new QPlainTextEdit(this);
+    m_cookieView->setObjectName(QStringLiteral("cookieJar"));
+    m_cookieView->setReadOnly(true);
+    m_cookieView->setFont(monospaceFont());
+    m_cookieView->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_tabs->addTab(m_cookieView, QStringLiteral("Cookies"));
+
     // --------------------------------------------------------------- shell
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -268,6 +275,7 @@ void DevToolsPanel::refresh()
         m_layoutView->setPlainText(
             QStringLiteral("No page loaded.\n\nOpen a page to inspect its layout."));
         m_networkView->setPlainText(QStringLiteral("No page loaded."));
+        m_cookieView->setPlainText(QStringLiteral("No page loaded."));
         return;
     }
 
@@ -291,7 +299,7 @@ void DevToolsPanel::refresh()
         // starts, and clearing it here would discard what the new page has
         // already logged before the panel was told about it.
         for (QPlainTextEdit *view : {m_console, m_styleView, m_rulesView, m_layoutView,
-                                     m_networkView}) {
+                                     m_networkView, m_cookieView}) {
             view->clear();
         }
         m_tree->clear();
@@ -381,6 +389,41 @@ void DevToolsPanel::refresh()
             resources << QStringLiteral("  %1").arg(entry);
     }
     m_networkView->setPlainText(resources.join(u'\n'));
+
+    // -------------------------------------------------------------- cookies
+    //
+    // The whole jar is shown, not just the cookies this page's host holds. A jar
+    // belongs to the window rather than to a document, so its contents explain
+    // requests the current page did not make; a view filtered to the current host
+    // would hide the cookie that is leaking to a third party, which is the one a
+    // user opens this tab to find.
+    QStringList cookies;
+    const storage::CookieJar *jar = current->cookieJar();
+    if (!jar) {
+        cookies << QStringLiteral("No cookie jar is attached to this page.");
+    } else if (jar->isEmpty()) {
+        cookies << QStringLiteral("No cookies stored.");
+    } else {
+        // The marker is worked out by asking the jar which cookies it would
+        // actually send to the page on screen, so it accounts for path, expiry
+        // and scheme as well as host. Re-deriving the rule here would be a second
+        // implementation that could disagree with the one that sends requests.
+        QStringList applicable;
+        for (const storage::Cookie &cookie : jar->cookiesFor(current->url()))
+            applicable << QStringLiteral("%1|%2|%3").arg(cookie.name, cookie.domain, cookie.path);
+
+        cookies << QStringLiteral("%1 cookie(s) in the jar:").arg(jar->count()) << QString();
+        for (const storage::Cookie &cookie : jar->all()) {
+            const QString key
+                = QStringLiteral("%1|%2|%3").arg(cookie.name, cookie.domain, cookie.path);
+            const QString mark = applicable.contains(key) ? QStringLiteral(" ")
+                                                          : QStringLiteral("!");
+            cookies << QStringLiteral("%1 %2").arg(mark, cookie.describe());
+        }
+        cookies << QString()
+                << QStringLiteral("! = not sent to the current page's host.");
+    }
+    m_cookieView->setPlainText(cookies.join(u'\n'));
 
 }
 

@@ -79,6 +79,13 @@ Page::Page(const PageSettings &settings, QObject *parent)
 
 Page::~Page() = default;
 
+void Page::setCookieJar(storage::CookieJar *cookies)
+{
+    m_cookies = cookies;
+    if (m_loader)
+        m_loader->setCookieJar(cookies);
+}
+
 void Page::setSettings(const PageSettings &settings)
 {
     m_settings = settings;
