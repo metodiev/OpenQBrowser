@@ -10,6 +10,7 @@
 
 #include "network/Cache.h"
 #include "network/HttpMessage.h"
+#include "network/ScriptFetch.h"
 #include "network/Url.h"
 
 namespace oqb::storage {
@@ -30,6 +31,13 @@ struct Resource
     /// the request it made.
     Url requestedUrl;
     QString mimeType;
+    /// The response headers as received. Script reads them through a Response's
+    /// Headers object, and a page that cannot see `Content-Type` cannot decide
+    /// how to parse what it was given.
+    HeaderList headers;
+    /// The status text, kept because a Response exposes it and the reason phrase
+    /// is not recoverable from the code alone.
+    QString statusText;
     QString error;
     int statusCode = 0;
 
@@ -96,7 +104,12 @@ struct CacheEntry
 /// is downloaded once, caps how many requests run in parallel, and emits
 /// finished() exactly once per fetch() call. Failures are cached as well, so a
 /// broken URL is not retried on every repaint.
-class ResourceLoader : public QObject
+///
+/// It is also the ScriptFetchProvider page script's fetch() talks to, so a
+/// request a page makes from JavaScript goes through the same cache, the same
+/// cookie jar, the same security policy and the same connection limit as a
+/// request the page itself made.
+class ResourceLoader : public ScriptFetchProvider
 {
     Q_OBJECT
 
@@ -107,6 +120,27 @@ public:
     /// Fetches `url`; finished() is emitted later. It may fire synchronously
     /// from inside this call when the resource is already cached.
     void fetch(const Url &url, const QString &referrer = {});
+
+    /// A request made by page script rather than by the page itself.
+    using ScriptRequest = network::ScriptFetchRequest;
+
+    /// Fetches a resource on behalf of page script, returning an id that
+    /// identifies this request. See ScriptFetchProvider for the contract.
+    ///
+    /// Script requests deliberately do not use finished(): a page's own loader
+    /// handler routes every finished() response as a subresource it is waiting
+    /// for, so a fetch() would decrement the page's in-flight counter, be treated
+    /// as a stylesheet to apply or an image to measure, and on a page with no
+    /// other work could end the load early. Script completion is reported on its
+    /// own signal, keyed by the returned id, which no page code watches.
+    int startScriptFetch(const ScriptRequest &request) override;
+
+    /// Abandons a script request. It stays silent afterwards, which is what
+    /// makes an aborted fetch not resolve.
+    void abortScriptFetch(int requestId) override;
+
+    /// Why the last startScriptFetch() call was refused. Empty when it was not.
+    QString refusalReason() const override { return m_scriptRefusal; }
 
     /// Reads a file:// URL from disk. Used by fetch() and by unit tests.
     static Resource loadLocalFile(const Url &url);
@@ -163,6 +197,11 @@ public:
 signals:
     void finished(const oqb::network::Resource &resource);
 
+    // fetchFinished() and fetchRedirected() come from ScriptFetchProvider, which
+    // this class implements. They are declared once, on the interface, and
+    // emitted from here: redeclaring them would hide the base signals moc
+    // generates for the same signatures.
+
 private:
     struct PendingRequest
     {
@@ -171,6 +210,9 @@ private:
     };
 
     void pump();
+    /// Wires a client's completion back to the loader. Every request path goes
+    /// through this, so no path can create a client that nothing listens to.
+    void connectClient(HttpClient *client);
     void startRequest(const PendingRequest &request);
     void handleHttpResponse(const Url &url, const HttpResponse &response);
     void handleFailure(const Url &url, const QString &error);
@@ -198,9 +240,62 @@ private:
     /// Stores the cookies a response set.
     void absorbCookies(const HttpResponse &response, const Url &url);
 
+    /// How a request that has come back should be reported.
+    ///
+    /// Script requests are tracked in a map parallel to m_clients, so the page
+    /// path is untouched: an ordinary request is still identified by its URL
+    /// alone, and only a request script made carries the extra bookkeeping the
+    /// CORS decision and the promise need.
+    struct ScriptMeta
+    {
+        /// The id startScriptFetch() handed out. Never 0.
+        int requestId = 0;
+        /// The document's origin, which a CORS grant is compared against.
+        QString requestOrigin;
+        /// True when the request asked for cookies, so a wildcard CORS grant
+        /// cannot authorise reading the response.
+        bool withCredentials = false;
+        /// True when the request asked for no cookies at all, in which case even
+        /// the ones a redirect would re-add are suppressed.
+        bool noCredentials = false;
+        /// True when the document and the request share an origin, in which case
+        /// no CORS check applies and every header is readable.
+        bool sameOrigin = true;
+        /// The body length, kept so the network view can show it without holding
+        /// the body itself.
+        int length = 0;
+        Url url;
+    };
+
+    /// Starts a script request, which carries its own method, headers and body.
+    void startScriptRequest(const ScriptMeta &meta, const ScriptRequest &request);
+    /// Completes a script request: absorbs its cookies, applies the CORS
+    /// decision, and reports it on fetchFinished().
+    void handleScriptResponse(const ScriptMeta &meta, const HttpResponse &response);
+    /// Reports a script request that produced no response at all.
+    void failScriptRequest(const ScriptMeta &meta, const QString &error);
+
+    /// Converts a stored or freshly parsed Resource into the shape script sees.
+    static ScriptFetchResponse scriptResponseFromResource(const Resource &resource,
+                                                          const ScriptMeta &meta);
+    /// Converts a redirect hop, which is reported without a body because the hop
+    /// is discarded and the response that follows carries the content.
+    ScriptFetchResponse redirectResponse(const ScriptMeta &meta,
+                                         const HttpResponse &response) const;
+
     QHash<QString, CacheEntry> m_cache;
     QList<PendingRequest> m_queue;
     QHash<HttpClient *, Url> m_clients;
+    /// The script requests that are in flight. A request appears in both this map
+    /// and m_clients, which is what lets the shared completion path tell the two
+    /// kinds apart.
+    QHash<HttpClient *, ScriptMeta> m_scriptClients;
+    /// Script requests accepted but not yet started, waiting for a free slot.
+    QList<QPair<ScriptMeta, ScriptRequest>> m_scriptQueue;
+    /// The next id fetchForScript() hands out. Starts at 1, because 0 is what a
+    /// refused request returns.
+    int m_nextScriptRequestId = 1;
+    QString m_scriptRefusal;
     int m_maxConcurrent = 6;
     int m_requestTimeoutMs = 30000;
     int m_requestCount = 0;

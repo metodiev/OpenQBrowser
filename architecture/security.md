@@ -123,6 +123,14 @@ Note the deliberate default-port normalisation: `Url::normalize()` drops `:80` f
 http and `:443` for https, so `http://example.test` and `http://example.test:80`
 produce the same origin string and compare equal.
 
+`Url::serialisedOrigin()` is the same origin **as a header writes it**, omitting a
+default port that `origin()` would include. The two differ on purpose and the
+distinction matters: `origin()` keeps the port so that an origin is a comparable
+opaque identity, while a server never writes `:443` in
+`Access-Control-Allow-Origin`. Comparing that header against `origin()` would
+reject every CORS grant made on a default port, so `fetch` compares against the
+serialised form.
+
 ## Cookies
 
 A cookie jar exists in `src/storage/Cookies.{h,cpp}` and is described in
@@ -235,9 +243,20 @@ much memory and how much work a single hostile or broken server can cause.
   None exist. A cookie jar does, but it is one jar for the whole window: a
   third-party request gets whatever the jar holds for its host. Private browsing is
   approximated only by `HistoryStore::clear()`.
-* **Subresource integrity, CORS, referrer policy.** Not implemented. A `Referer`
+* **Subresource integrity and referrer policy.** Not implemented. A `Referer`
   header is sent (`ResourceLoader::startRequest()` adds the document URL as
   `Referer` for subresources) with no policy controlling it beyond that.
+* **CORS preflight, and CORS for anything but `fetch`.** A cross-origin `fetch`
+  response is readable only when `Access-Control-Allow-Origin` grants the
+  document's origin, its body is withheld otherwise, and its headers are filtered
+  to the safelisted and explicitly exposed ones
+  (`FetchPolicy::crossOriginReadableHeaders()`). What is missing is the `OPTIONS`
+  preflight, so a request that would need one is refused rather than negotiated;
+  there is no `Access-Control-Max-Age` cache, no `no-cors` opaque-response path,
+  and a response's `Set-Cookie` is never honoured from a cross-origin reply. The
+  rule is also not applied to a page's own subresources, which is what the
+  browser's own loader fetches: an `<img>` or a `<script>` still loads
+  cross-origin without a grant, as it must, but nothing consults CORS for it.
 * **Downloads, `Content-Disposition` handling, file uploads, and form submission.**
   No download path exists, so a response is either rendered or shown as an error.
 * **An audit.** The browser has not been reviewed by anyone other than its

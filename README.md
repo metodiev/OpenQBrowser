@@ -40,13 +40,15 @@ What works today:
 | Cookies | A cookie jar: `Set-Cookie` parsing, host and path scoping, expiry, `Secure`, `HttpOnly`, `SameSite` |
 | Caching | Conditional caching: `Cache-Control`, `Expires` and `Last-Modified` freshness, and `ETag` revalidation, so a stale resource costs a round trip and no body |
 | DevTools | Console that evaluates in the page, element tree with computed style and applied rules, element picker, layout, resource and cookie views |
-| Testing | Seventeen test suites, all passing |
+| `fetch` | Promise-based `fetch` with `Response` and `Headers`: `text()`, `json()`, `arrayBuffer()`, `blob()`, GET/POST/HEAD, request headers and bodies, CORS, and the browser's own header safeguards |
+| Testing | Nineteen test suites, all passing |
 
 What does not work yet, and what you will observe:
 
 | Area | What happens |
 | --- | --- |
-| Modules, `fetch` | `<script type="module">` is skipped, and `fetch`/`XMLHttpRequest` are absent. See [architecture/javascript.md](./architecture/javascript.md). |
+| Modules | `<script type="module">` is skipped, so a page written as modules needs a bundler or a fallback. |
+| `XMLHttpRequest`, CORS preflight | `fetch` is implemented and `XMLHttpRequest` is absent, so a page takes its modern path. A request that would need an `OPTIONS` preflight is refused rather than negotiated. |
 | Forms | Rendered and styled, but nothing is submitted. |
 | Persistence | Cookies and cached responses work but are held in memory; nothing — cookies, cache, history or bookmarks — is stored between runs. |
 | Sandboxing | No process isolation or site isolation. |
@@ -72,6 +74,28 @@ brew install qt cmake
 ```
 
 ### Build and test
+
+The two scripts in [scripts/](./scripts) wrap the build and the run:
+
+```bash
+./scripts/build.sh              # configure and build
+./scripts/build.sh --test       # build, then run the test suite
+./scripts/build.sh --clean      # delete the build directory first
+./scripts/build.sh --debug      # Debug build into build-debug/
+```
+
+`run.sh` starts the browser and rebuilds first if the sources are newer than the
+binary, so it is the usual way to launch while working on the code:
+
+```bash
+./scripts/run.sh                              # open the browser window
+./scripts/run.sh https://example.com/         # open a page
+./scripts/run.sh --dump-dom https://bbc.com   # any browser flag works
+```
+
+Both scripts find Qt on their own (Homebrew on macOS, `CMAKE_PREFIX_PATH`
+elsewhere) and handle the macOS toolchain problem described below. Neither is
+required — the raw commands work too:
 
 ```bash
 cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
@@ -102,6 +126,10 @@ On other platforms, or to pass arguments, run the executable:
 # Load a page straight away
 ./build/bin/openqbrowser https://example.com/
 ```
+
+On macOS, `OQB_GUI=1 ./scripts/run.sh` starts the bundle through `open` instead,
+which gives the window a Dock icon; `OQB_BUILD_DIR=build-debug ./scripts/run.sh`
+launches a build from somewhere other than `build/`.
 
 > **Nothing appears?** If you run the plain binary and see no window, make sure
 > `QT_QPA_PLATFORM` is not set to `offscreen` in your shell — that environment
@@ -143,7 +171,9 @@ repository are checked.
 ./build/bin/openqbrowser --screenshot=page.png --width=1200 https://example.com/
 ```
 
-On a machine with no display, select the offscreen platform plugin:
+On a machine with no display, select the offscreen platform plugin. `run.sh`
+does this on its own for the report flags, so the prefix is only needed when
+calling the binary directly:
 
 ```bash
 QT_QPA_PLATFORM=offscreen ./build/bin/openqbrowser --screenshot=page.png about:home
@@ -151,16 +181,20 @@ QT_QPA_PLATFORM=offscreen ./build/bin/openqbrowser --screenshot=page.png about:h
 
 ### On macOS
 
-Xcode's command line tools and Homebrew's Qt must agree about the toolchain. If
-the build reports that `clang++` cannot be found even though it is installed,
-point the build at the tools that are present:
+Two toolchains are installed — Xcode's and the Command Line Tools — and their
+linkers are different generations. If the link fails with a wall of
+`tapi error: malformed file` / `unknown architecture` messages, CMake has paired
+a newer SDK with an older linker. Which one you use is chosen by `DEVELOPER_DIR`:
 
 ```bash
 export DEVELOPER_DIR=/Library/Developer/CommandLineTools
 cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
 ```
 
-See [architecture/build.md](./architecture/build.md) for the details.
+`scripts/common.sh` does this for you, but only after checking: it links a
+trivial program first and only switches if the current environment cannot. See
+[architecture/build.md](./architecture/build.md) for the mechanism and an
+alternative fix.
 
 ## Using the browser
 
@@ -232,6 +266,7 @@ OpenQBrowser/
 │   └── browser/     The window, tabs and navigation
 ├── examples/        Pages that exercise the engine
 ├── architecture/    Design documents for every subsystem
+├── scripts/         build.sh and run.sh
 ├── assets/          Icons and other static files
 ├── CMakeLists.txt
 └── LICENSE
@@ -245,23 +280,36 @@ of it.
 
 ## Testing
 
-Nine suites, run by `ctest`:
+Nineteen suites, run by `ctest`. Each suite is also a standalone executable in
+`build/bin`, so a single file can be run on its own.
 
 | Suite | Covers |
 | --- | --- |
 | `tst_url` | URL parsing and RFC 3986 reference resolution |
 | `tst_html` | Tokenizer, tree construction, entities, quirks mode |
-| `tst_css` | Tokenizer, values, selectors, cascade, media queries |
-| `tst_layout` | Box tree, block and inline layout, painting |
+| `tst_css` | Tokenizer, values, selectors, cascade, media queries, `@media` evaluation |
+| `tst_grid` | Grid track parsing and sizing |
+| `tst_layout` | Box tree, block, inline, flex and grid layout, painting |
+| `tst_javascript` | The engine, bindings, events, timers |
+| `tst_cookies` | Cookie parsing, the cookie jar, `document.cookie` |
+| `tst_cache` | Cache directives and validation |
+| `tst_fetch` | `fetch()` policy: methods, headers, CORS, credentials |
 | `tst_http` | The HTTP client against a local server: framing, redirects, errors |
 | `tst_pipeline` | Parse → style → layout → paint, end to end |
 | `tst_redirect` | Redirect chains, late stylesheets, large documents, nesting limits |
 | `tst_perf` | Layout cost, to catch worse-than-linear behaviour |
+| `tst_cookie_flow` | A `Set-Cookie` travelling through a real response |
+| `tst_cache_flow` | Revalidation and conditional requests over HTTP |
+| `tst_fetch_flow` | A script calling `fetch()` through the page loader |
+| `tst_scripting` | Scripts running in the pipeline, in the right order |
 | `tst_browser` | The window, tabs, history, error pages |
+| `tst_devtools` | The inspector panel and its reports |
 
 The tests are not decoration: they have found and fixed real bugs, including
-several where the parser or layout engine would loop or misplace content. See
-[architecture/testing.md](./architecture/testing.md).
+several where the parser or layout engine would loop or misplace content. Layout
+and media-query behaviour is checked against Chrome on identical markup, so the
+suites encode what other browsers actually do rather than what the code happens
+to do. See [architecture/testing.md](./architecture/testing.md).
 
 ## Documentation
 
@@ -299,7 +347,7 @@ Contributions are welcome. The short version:
 
 ```bash
 git checkout -b feature/my-change
-cmake --build build -j && ctest --test-dir build --output-on-failure
+./scripts/build.sh --test
 git commit -am "Describe the change"
 git push origin feature/my-change
 ```

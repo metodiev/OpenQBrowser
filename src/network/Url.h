@@ -69,7 +69,20 @@ public:
     QString toLocalFile() const;
 
     /// Origin (scheme, host, port) used for same-origin checks.
+    ///
+    /// The port is always present, even when it is the scheme's default. That is
+    /// what makes two origins comparable as opaque identities: comparing
+    /// "https://a.com:443" with "https://a.com" would otherwise have to know
+    /// which scheme each came from.
     QString origin() const;
+
+    /// The origin as it is written in a header, which omits a default port.
+    ///
+    /// This is what `Origin:` and `Access-Control-Allow-Origin` carry, and what a
+    /// server echoes back, so it is the form a CORS grant has to be compared
+    /// against: a server never writes ":443", and matching against origin() would
+    /// therefore reject every grant made on a default port.
+    QString serialisedOrigin() const;
 
     /// Resolves `relative` against this URL.
     Url resolved(const QString &relative) const;

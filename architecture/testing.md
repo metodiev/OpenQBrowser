@@ -1,12 +1,12 @@
 # Testing
 
 OpenQBrowser has three test suites — unit, integration and browser — containing
-seventeen QTest-based targets, all registered with CTest from `tests/CMakeLists.txt`:
+nineteen QTest-based targets, all registered with CTest from `tests/CMakeLists.txt`:
 
 | Suite | Directory | Targets | Contents |
 | --- | --- | --- | --- |
-| Unit | `tests/unit/` | `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript`, `tst_cookies`, `tst_cache`, `tst_grid` | One component each, in isolation; `tst_javascript` runs real scripts against a real parsed document. |
-| Integration | `tests/integration/` | `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting`, `tst_cookie_flow`, `tst_cache_flow` | Several components together, including real loopback HTTP; `tst_scripting` drives scripted pages through the load pipeline. |
+| Unit | `tests/unit/` | `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript`, `tst_cookies`, `tst_cache`, `tst_grid`, `tst_fetch` | One component each, in isolation; `tst_javascript` runs real scripts against a real parsed document, and `tst_fetch` drives `fetch` against a fake provider. |
+| Integration | `tests/integration/` | `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting`, `tst_cookie_flow`, `tst_cache_flow`, `tst_fetch_flow` | Several components together, including real loopback HTTP; `tst_scripting` drives scripted pages through the load pipeline. |
 | Browser | `tests/browser/` | `tst_browser`, `tst_devtools` | The window, its tabs and user-level navigation, and the developer tools panel. |
 
 Every target links `oqb_core` (and `tst_browser` and `tst_devtools` additionally
@@ -65,9 +65,19 @@ selectors (`parsesSelectorLists`, `computesSpecificity`, `matchesCombinators`,
 `matchesAttributeSelectors`, `matchesPseudoClasses`,
 `splitsSelectorListsOnTopLevelCommas`), the parser (`parsesRulesAndDeclarations`,
 `parsesImportantDeclarations`, `parsesShorthands`, `recoversFromMalformedInput`),
-media queries (`parsesMediaQueries`, `evaluatesMediaQueries`) and the cascade
+media queries (`parsesMediaQueries`, `evaluatesMediaQueries`,
+`matchesAMediaTypeFollowedByAnd`, `keepsConditionalRulesInDocumentOrder`) and the
+cascade
 (`appliesInheritance`, `appliesSpecificity`, `appliesImportantAndOriginOrder`,
 `appliesInlineStyles`, `computesRelativeFontSizes`, `appliesUserAgentDefaults`).
+
+The last two media-query cases are regressions for two bugs that together cost a
+real news site its entire responsive layout. `matchesAMediaTypeFollowedByAnd()`
+pins the `and` between a media type and its first condition: reading the type as
+`"screen and"` made every `@media screen and (...)` rule fail to match.
+`keepsConditionalRulesInDocumentOrder()` pins source order, because the plain and
+conditional rules are collected from separate lists and a naive concatenation lets
+the narrowest breakpoint win at every width. Both were mutation-tested.
 
 ### `tests/unit/tst_layout.cpp`
 
@@ -82,11 +92,24 @@ of `margin: 0 auto` inside `body`'s 8px margin), `collapsesAdjacentMargins`,
 `positionsListMarkers`, `sizesReplacedElements`, `growsDocumentHeightWithContent`,
 `paintsBackgroundColours`, `paintsTextPixels` and `cullsOffscreenContent`.
 
-Fifty-seven cases in all, of which twelve cover floats: both edges, shrink-to-fit,
+Seventy-eight cases in all: twelve cover floats and fourteen cover grid. The float
+cases: both edges, shrink-to-fit,
 text avoidance, a return to full width below the float, two left floats side by
 side, a float dropping when there is no room, `clear`, containment by
 `overflow: hidden` and by `inline-block`, its deliberate absence without a
 formatting context, and a float inside a narrower parent.
+
+Four cases were added after `bbc.com` exposed four grid bugs. Two concern track
+sizing: `dividesTheWidthBetweenManyFractionalColumns` (`repeat(24, 1fr)` inside a
+parent of known width must divide it, not produce content-width columns) and
+`spansColumnsWhenTheSpanHasNoStartLine` (`grid-column: span 2` with no start
+line). The other two concern a track's minimum:
+`treatsABareFlexAsMinmaxAutoWhenLayingOut` pins that `1fr` and
+`minmax(auto, 1fr)` are the same track and must lay out identically, and
+`keepsTheAutomaticMinimumOfASingleSpanItem` pins CSS Grid 6.6 — a single-track
+item keeps its automatic minimum, a spanning item does not. All four were
+mutation-tested, and each expected value was checked against Chrome on the same
+markup.
 
 Several of them earn their place against a mutation. Removing `clear`, removing
 float avoidance from `spanAt()`, or removing container containment each makes the
@@ -246,6 +269,64 @@ a fresh entry; and `aSecondPageReusesASharedStylesheet()`, which drives two real
 `browser::Page` loads and asserts one request for a stylesheet they share. That
 last case is the one that pins the navigation bug: restoring
 `Page::stop()`'s `clearCache()` makes it report two requests.
+
+### `tests/unit/tst_fetch.cpp`
+
+Two halves, because the feature has two halves. A `FakeProvider` answers from a
+table, so the JavaScript-facing behaviour is asserted without a socket and a
+failure names the behaviour rather than the network.
+
+**Policy cases** (no engine at all, because the rules that decide what a page may
+send and read are the security boundary and are pure functions): only real
+methods allowed; `CONNECT`/`TRACE`/`TRACK` refused; forbidden request headers
+refused, case-insensitively; `Proxy-`/`Sec-` prefixes refused; safelisted headers
+allowed with parameters ignored for `Content-Type`; an oversized safelisted value
+refused; CR/LF in a value refused; the simple-request test; safelisted response
+headers exposed; a named header exposed only when named; no grant refused; a
+matching origin accepted; a wildcard accepted for an anonymous request and
+**refused when credentials were sent**; a named origin requiring
+`Allow-Credentials`; a grant for another origin refused; header lists split; and
+`corsGrantMatchesTheSerialisedOrigin()`, which pins the default-port rule below.
+
+**Binding cases**: `fetch`/`Response`/`Headers` exposed with the right arities; a
+rejection when no provider is installed; status, status text and headers read
+back; an HTTP error status **resolving** with `ok === false`; a transport failure
+rejecting; `text()`, `json()`, `arrayBuffer()`; a non-JSON body rejecting
+`.json()` with a `SyntaxError`; an absent header reported as `null` and an empty
+one as `""`; `response.url` and `redirected`; a forbidden header dropped at the
+binding; a POST body and custom header reaching the provider; a relative URL
+resolved against the document; an invalid URL rejected with no request made;
+handlers running across turns in order; `hasPendingWork()` true while a request
+is in flight; an abort leaving the promise pending; and a navigation cancelling
+outstanding fetches.
+
+Two cases here exist because a mutation showed the first version of this suite did
+**not** cover them: removing the header filter and removing the
+wildcard-credentials guard each left the whole suite passing at the time. Both
+mutations are now caught.
+
+`aRepeatingTimerNeverStopsBeingWork()` pins the shape of a page that never goes
+quiet. It is recorded because it is the reason the headless path needs a deadline
+of its own: a `setInterval` keeps work outstanding however many frames run, so a
+caller that waited for the page to stop would hang on any page with a polling loop.
+That was a real bug — `--dump-dom` hung on a `setInterval` page before the
+deadline was added.
+
+### `tests/integration/tst_fetch_flow.cpp`
+
+fetch() over a real socket. The unit suite proves what the bindings do with a
+response; what only a socket can prove is that the request that left the browser
+was the one the page asked for, so the server records the raw request line and
+headers rather than answering from a table.
+
+Cases: a GET arriving as a GET with the body received;
+`sendsPostBodyAndHeaders()` asserting the method, the custom header and the body
+as the server saw them; `doesNotConfuseThePageLoader()`, which asserts a script
+response produces no `ResourceLoader::finished` while an ordinary page request
+still does; a cross-origin response blocked without a grant and allowed with one;
+a secure page refused a plaintext request, with the server asserted to have seen
+no request at all; `seesOnlyTheHeadersItIsGranted()`; and a loader with no page
+attached still completing.
 
 ## Browser suite
 

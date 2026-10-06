@@ -14,6 +14,10 @@ namespace oqb::dom {
 class Document;
 }
 
+namespace oqb::network {
+class ScriptFetchProvider;
+}
+
 namespace oqb::javascript {
 
 class TimerQueue;
@@ -61,6 +65,11 @@ public:
 
     /// Forgets every message the engine has collected.
     void clearMessages();
+
+    /// Points fetch() at the loader. A null provider is refused rather than
+    /// remembered: without one there is nothing to fetch from, and a page that
+    /// called fetch would wait for a response that could never come.
+    void setFetchProvider(network::ScriptFetchProvider *provider);
 
     /// Timers scheduled by the script.
     TimerQueue &timers();

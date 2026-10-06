@@ -166,6 +166,25 @@ QString Url::origin() const
         + QString::number(effectivePort());
 }
 
+QString Url::serialisedOrigin() const
+{
+    if (!m_hasAuthority)
+        return m_scheme + QStringLiteral(":");
+
+    // A port that the scheme already implies is left out, because that is how
+    // every server writes the header: "https://example.com", never
+    // "https://example.com:443".
+    const int port = effectivePort();
+    const bool isDefault = (m_scheme == QLatin1String("http") && port == 80)
+        || (m_scheme == QLatin1String("https") && port == 443)
+        || (m_scheme == QLatin1String("ws") && port == 80)
+        || (m_scheme == QLatin1String("wss") && port == 443);
+
+    if (isDefault)
+        return m_scheme + QStringLiteral("://") + m_host;
+    return m_scheme + QStringLiteral("://") + m_host + u':' + QString::number(port);
+}
+
 QString Url::displayHost() const
 {
     if (m_host.isEmpty())

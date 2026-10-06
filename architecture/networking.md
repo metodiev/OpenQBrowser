@@ -10,7 +10,9 @@ caches resources and caps concurrency.
 | `src/network/Url.h`, `Url.cpp` | `Url`: parsing, normalisation, reference resolution, origins. |
 | `src/network/HttpMessage.h`, `HttpMessage.cpp` | `HeaderList`, `HttpRequest`, `HttpResponse` and the `http::` helpers. |
 | `src/network/HttpClient.h`, `HttpClient.cpp` | The HTTP/1.1 state machine over TCP or TLS. |
-| `src/network/ResourceLoader.h`, `ResourceLoader.cpp` | `Resource`, the in-memory cache and the request queue. |
+| `src/network/ResourceLoader.h`, `ResourceLoader.cpp` | `Resource`, the in-memory cache, the request queue and script requests. |
+| `src/network/FetchPolicy.h`, `FetchPolicy.cpp` | The CORS rules and header safeguards `fetch` is bounded by, as pure functions. |
+| `src/network/ScriptFetch.h`, `ScriptFetch.cpp` | `ScriptFetchProvider`: the seam `fetch` talks to instead of the loader directly. |
 
 `Url::parse()` is used instead of `QUrl` deliberately: the parsing rules are the
 part of a browser most often hidden behind a library, and the code comments name
@@ -224,18 +226,54 @@ The cache is a `QHash<QString, Resource>` keyed by `Url::toString()`:
   public — the tests in `tests/integration/tst_http.cpp` use them directly, and
   `Page::reload()` -> `stop()` clears the cache.
 
-`Resource` carries `url`, `data`, `mimeType`, `error` and `statusCode`, plus
-`isHtml()`, `isCss()`, `isImage()`, `isScript()` and `text()` (decodes with the
-MIME charset, defaulting to UTF-8 — subresources rarely declare one).
+`Resource` carries `url`, `data`, `mimeType`, `error`, `statusCode`, `statusText`
+and `headers`, plus `isHtml()`, `isCss()`, `isImage()`, `isScript()` and `text()`
+(decodes with the MIME charset, defaulting to UTF-8 — subresources rarely declare
+one). The headers are kept because script reads them through a `Response`: a page
+that cannot see `Content-Type` cannot decide how to parse what it was given. A
+local file has none of its own, so `loadLocalFile()` supplies the `Content-Type`
+and `Content-Length` a server would have sent.
+
+### Requests from script
+
+`ResourceLoader` implements `ScriptFetchProvider`, so `fetch` shares the cache,
+the cookie jar, the security policy and the concurrency limit with the requests
+the page itself makes. `startScriptFetch(request)` returns an id, or 0 when the
+request was refused — `refusalReason()` then says why. It carries its own method,
+headers and body, which the page path has no use for.
+
+Two things about it are deliberate:
+
+* **A separate completion signal.** Script responses are reported on
+  `fetchFinished(id, response)`, never on `finished()`. A page's own handler
+  routes every `finished()` as a subresource it is waiting for, so a script
+  response reaching it would decrement the page's in-flight counter, be treated as
+  a stylesheet to apply or an image to measure, and on a page with nothing else
+  outstanding could end the load early.
+* **One `connectClient()` call, shared with the page path.** The client plumbing —
+  the cookie provider, the completion wiring — is identical for both, which is why
+  it is one function. The script path originally built its own client and
+  connected nothing, so its responses arrived and were dropped: the page waited on
+  a promise that could never settle.
+
+A `GET` whose answer the cache already holds is served from it, so a page polling
+an endpoint does not cost a request each time. A `POST` never is: it is not
+idempotent, and a cached one would report a write that never happened. Cross-origin
+responses have their CORS decision — and their header filtering — applied on the
+**final** response, since after a redirect it is the answer the page receives that
+has to grant access.
 
 ## What is not here
 
 * HTTP/2 and HTTP/3; QUIC; ALPN beyond what Qt negotiates by default.
 * Connection reuse: every request opens a socket and sends `Connection: close`.
-* Conditional requests (`If-None-Match`, `If-Modified-Since`), `Cache-Control`,
-  `ETag` or disk caching. The only cache is the in-memory `ResourceLoader` map.
-* Proxy configuration, HSTS preload lists (see `security.md`), cookies beyond the
-  stripping rules, and `Authorization` handling outside redirects.
+* A disk cache. `Cache.{h,cpp}` implements conditional requests
+  (`If-None-Match`, `If-Modified-Since`), `Cache-Control`, `ETag` and freshness,
+  but only in memory, so every entry dies with the process.
+* Proxy configuration, HSTS preload lists (see `security.md`), and
+  `Authorization` handling outside redirects.
+* CORS preflight. A cross-origin `fetch` that would need an `OPTIONS` negotiation
+  is refused rather than negotiated; see `security.md`.
 * `Content-Type` sniffing beyond the `<meta charset>` rule and the MIME database
   for local files; a page served as `application/octet-stream` is not rendered as
   HTML.

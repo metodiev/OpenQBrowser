@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include <QHash>
 #include <QList>
 #include <QString>
@@ -43,11 +45,49 @@ struct GridTrack
     /// The name given by `[name]` before the track, for `grid-column: name`.
     QString name;
 
+    /// What the track's *minimum* is measured against.
+    ///
+    /// The distinction matters because only `auto` — the automatic minimum — is
+    /// zeroed for an item that spans more than one track (§6.6). An explicit
+    /// `min-content` or `max-content` minimum is the author's own, and is
+    /// honoured however many tracks the item crosses.
+    enum class MinKind {
+        /// A `<length>`/`<percentage>` floor: the author's own, always kept.
+        Fixed,
+        /// No floor at all — `minmax(0, …)`.
+        Zero,
+        /// `auto`, or the automatic minimum a bare `<flex>` implies.
+        Auto,
+        /// An explicit `min-content` minimum.
+        MinContent,
+        /// An explicit `max-content` minimum.
+        MaxContent,
+    };
+
     /// The resolved size, filled in by the sizing pass.
     double size = 0;
+    /// The track's minimum, from `minmax()` or implied by a bare `<flex>`.
+    ///
+    /// A bare `<flex>` implies `minmax(auto, <flex>)` (§7.2.4), so `1fr` and
+    /// `minmax(auto, 1fr)` are the same track and must lay out identically.
+    MinKind minKind = MinKind::Auto;
+    /// The floor for `MinKind::Fixed`; `contentMin` is used for the rest.
+    double floorPixels = 0;
+
     /// The size the track's content wants, filled in by the measurement pass.
+    ///
+    /// `contentMin` is the floor a content-based minimum resolves to, and for
+    /// `MinKind::Auto` it is filled only from items that span a single track,
+    /// because §6.6 zeroes those items' automatic minimum.
     double contentMin = 0;
     double contentMax = 0;
+
+    /// True when the minimum is measured from the content rather than declared.
+    bool hasContentFloor() const
+    {
+        return minKind == MinKind::Auto || minKind == MinKind::MinContent
+            || minKind == MinKind::MaxContent;
+    }
 
     bool isFlexible() const { return kind == Kind::Fraction; }
     /// True when the track has a size that does not depend on its content.
@@ -57,21 +97,6 @@ struct GridTrack
     }
 };
 
-/// A parsed `grid-template-columns` / `-rows` value.
-struct GridTrackList
-{
-    QVector<GridTrack> tracks;
-    /// The names that appear in `[name]` line name lists, in order, each
-    /// associated with the line index it precedes. A name may repeat, which is
-    /// what makes `grid-column: content` span several tracks.
-    QHash<QString, QList<int>> lineNames;
-
-    bool isEmpty() const { return tracks.isEmpty(); }
-    int size() const { return tracks.size(); }
-
-    /// The line name at `line`, if any. Line 1 is the first.
-    void addLineName(int line, const QString &name);
-};
 
 /// Resolves every track's size against the space available.
 ///
@@ -99,6 +124,34 @@ struct GridTrackEntry
     QStringList namesBefore;
 };
 
+/// A `repeat()` whose repetition count depends on the container's size.
+///
+/// `auto-fill` and `auto-fit` cannot be expanded while the declaration is being
+/// parsed: how many repetitions fit is a function of the width the grid is
+/// finally given, which is only known once layout runs. So they are kept as a
+/// recipe and expanded per layout, at the size actually available.
+///
+/// Without this the whole `grid-template-columns` declaration collapses to a
+/// single implicit column, which is not a small error: it is the pattern every
+/// responsive card grid on the web is written with, and the page comes out as
+/// one very tall column instead of a grid.
+struct GridAutoRepeat
+{
+    /// The tracks one repetition contributes.
+    QVector<GridTrackEntry> tracks;
+    /// True for `auto-fit`, which collapses the empty repetitions at the end
+    /// rather than keeping them as empty tracks.
+    bool fit = false;
+
+    /// How wide one repetition is at its minimum, which is what decides how many
+    /// fit. -1 when the repetition has no definite minimum, in which case only
+    /// one fits.
+    double minRepetitionWidth(double fontSize, double rootFontSize,
+                              double availableWidth) const;
+};
+
+struct GridTrackList;
+
 /// Parses a track list such as
 /// `[full-start] minmax(1em, 1fr) [full-end]`.
 ///
@@ -114,6 +167,44 @@ struct GridTrackEntry
 QVector<GridTrackEntry> parseTrackList(const QString &value, double fontSize,
                                        double rootFontSize, double availableWidth,
                                        GridTrackList *out);
+
+/// A parsed `grid-template-columns` / `-rows` value.
+struct GridTrackList
+{
+    /// The `auto-fill`/`auto-fit` repetition, when the template has one. A
+    /// template may not mix it with other tracks in CSS, so one is enough.
+    std::optional<GridAutoRepeat> autoRepeat;
+
+    /// The tracks that come before the auto repetition.
+    QVector<GridTrackEntry> leadingTracks;
+    /// The tracks that come after it.
+    QVector<GridTrackEntry> trailingTracks;
+
+    /// The grid's column gap, needed because each extra repetition costs a gap as
+    /// well as a track.
+    double gap = 0;
+    /// How many items landed in this grid. `auto-fit` collapses the repetitions
+    /// nothing landed in, so it needs the count.
+    int autoPlacementItemCount = 0;
+
+    /// Expands the template for a container `availableWidth` wide, returning the
+    /// tracks to lay out with. A template with no auto repetition returns its own
+    /// tracks unchanged.
+    QVector<GridTrackEntry> expand(double availableWidth, double fontSize,
+                                   double rootFontSize) const;
+
+    QVector<GridTrack> tracks;
+    /// The names that appear in `[name]` line name lists, in order, each
+    /// associated with the line index it precedes. A name may repeat, which is
+    /// what makes `grid-column: content` span several tracks.
+    QHash<QString, QList<int>> lineNames;
+
+    bool isEmpty() const { return tracks.isEmpty(); }
+    int size() const { return tracks.size(); }
+
+    /// The line name at `line`, if any. Line 1 is the first.
+    void addLineName(int line, const QString &name);
+};
 
 /// Parsed `grid-column` / `grid-row` / `grid-area` placement.
 ///

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QFont>
+#include <QHash>
 #include <QRectF>
 #include <QString>
 #include <QStringList>
@@ -201,6 +202,15 @@ private:
         int columnEnd = 1;
         int rowStart = 0;
         int rowEnd = 1;
+        /// How many tracks the item asked to span, when it was placed by name or
+        /// by `span` alone.
+        ///
+        /// Needed because an item with `grid-column: span 2` and no start line
+        /// has neither a start nor an end when it reaches auto-placement: both
+        /// are the "auto" marker, so the span cannot be recovered by subtracting
+        /// them, and the item would be placed in a single cell.
+        int columnSpanHint = 0;
+        int rowSpanHint = 0;
         /// The measured contribution to its columns and rows.
         double minWidth = 0;
         double maxWidth = 0;
@@ -267,6 +277,37 @@ private:
     /// The resolved value of align-self for an item: its own, or the
     /// container's align-items when the item says auto.
     static QString resolveAlignSelf(const FlexItem &item, const css::ComputedStyle *container);
+
+    /// A cached text measurement, so that the same string is never shaped twice.
+    ///
+    /// Measuring text is the single most expensive thing layout does: Qt runs it
+    /// through HarfBuzz to shape and position every glyph. A page re-measures the
+    /// same strings over and over - the same words when wrapping, the same
+    /// subtree when sizing a flex item, and every pass when a page is laid out
+    /// again because a font or image arrived. Caching turns that from a shaping
+    /// run per call into a hash lookup.
+    struct TextMetric
+    {
+        double width = 0;
+        double ascent = 0;
+        double descent = 0;
+        double lineHeight = 0;
+    };
+
+    /// The metrics for `text` in `font`, shaped once.
+    ///
+    /// A returned reference is stable only until the next call, which is all any
+    /// caller here needs: every one of them reads the fields immediately.
+    const TextMetric &measure(const QFont &font, const QString &text) const;
+
+    /// The advance width of a single character in `font`, cached separately
+    /// because the space width is asked for on every wrapped line.
+    double measureCharacter(const QFont &font, QChar character) const;
+
+    /// The measurement cache, keyed by the font and the string. Mutable because
+    /// measuring is logically a const operation on the engine.
+    mutable QHash<QString, TextMetric> m_textMetrics;
+    mutable QHash<QString, double> m_characterWidths;
 
     /// Reserves a style that overrides part of a box's own, for the duration of
     /// the layout.

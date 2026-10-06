@@ -148,20 +148,25 @@ bool parseTrackSize(const QString &token, double fontSize, double rootFontSize,
 
     if (trimmed.compare(QLatin1String("auto"), Qt::CaseInsensitive) == 0) {
         out->kind = GridTrack::Kind::Auto;
+        out->minKind = GridTrack::MinKind::Auto;
         return true;
     }
     if (trimmed.compare(QLatin1String("min-content"), Qt::CaseInsensitive) == 0) {
         out->kind = GridTrack::Kind::MinContent;
+        out->minKind = GridTrack::MinKind::MinContent;
         return true;
     }
     if (trimmed.compare(QLatin1String("max-content"), Qt::CaseInsensitive) == 0) {
         out->kind = GridTrack::Kind::MaxContent;
+        out->minKind = GridTrack::MinKind::MaxContent;
         return true;
     }
 
+    // A bare `<flex>` is `minmax(auto, <flex>)`, so its minimum is automatic.
     if (double factor = 0; parseFlex(trimmed, &factor)) {
         out->kind = GridTrack::Kind::Fraction;
         out->value = factor;
+        out->minKind = GridTrack::MinKind::Auto;
         return true;
     }
 
@@ -195,19 +200,26 @@ bool parseTrackSize(const QString &token, double fontSize, double rootFontSize,
         if (double factor = 0; parseFlex(maxText, &factor)) {
             out->kind = GridTrack::Kind::Fraction;
             out->value = factor;
+            // A bare `<flex>` is `minmax(auto, <flex>)` (§7.2.4), so this must
+            // produce the same track the `auto` branch above would.
             if (minText.compare(QLatin1String("auto"), Qt::CaseInsensitive) == 0) {
-                // `minmax(auto, 1fr)` floors at the content's minimum size.
-                out->contentMin = -1; // sentinel: use the content minimum
+                out->minKind = GridTrack::MinKind::Auto;
+            } else if (minText.compare(QLatin1String("min-content"), Qt::CaseInsensitive) == 0) {
+                out->minKind = GridTrack::MinKind::MinContent;
+            } else if (minText.compare(QLatin1String("max-content"), Qt::CaseInsensitive) == 0) {
+                out->minKind = GridTrack::MinKind::MaxContent;
             } else {
                 double pixels = 0;
                 bool percentage = false;
                 if (resolveToken(minText, fontSize, rootFontSize, availableWidth, &pixels,
                                  &percentage)) {
-                    out->contentMin = pixels;
-                } else if (minText.compare(QLatin1String("min-content"), Qt::CaseInsensitive) == 0
-                           || minText.compare(QLatin1String("max-content"),
-                                              Qt::CaseInsensitive) == 0) {
-                    out->contentMin = -1;
+                    // `minmax(0, 1fr)` is a real floor of zero, and it is what
+                    // lets the column shrink below its content.
+                    out->minKind = pixels > 0 ? GridTrack::MinKind::Fixed
+                                              : GridTrack::MinKind::Zero;
+                    out->floorPixels = pixels;
+                } else {
+                    out->minKind = GridTrack::MinKind::Auto;
                 }
             }
             return true;
@@ -232,6 +244,7 @@ bool parseTrackSize(const QString &token, double fontSize, double rootFontSize,
         out->kind = GridTrack::Kind::Fixed;
         out->value = qMax(minPixels, maxPixels);
         out->isPercentage = maxPercentage || minPercentage;
+        // A fixed track takes its length outright, so its `minKind` is unused.
         return true;
     }
 
@@ -289,14 +302,38 @@ QVector<GridTrackEntry> parseTrackList(const QString &value, double fontSize,
             continue;
         }
 
-        // repeat(<count>, <list>) expands in place. `auto-fill` and `auto-fit`
-        // need the container's size to know how many repetitions fit, which is
-        // not known until layout runs; treating them as one repetition keeps the
-        // grid usable rather than collapsing it to nothing.
+        // repeat() either expands in place, when the count is a number, or is
+        // kept as a recipe when it is auto-fill/auto-fit: how many repetitions
+        // fit depends on the width the grid is finally given, which is not known
+        // while the declaration is being parsed.
         if (const QString body = functionBody(token, QStringLiteral("repeat")); !body.isEmpty()) {
             const QStringList parts = splitArguments(body);
             bool ok = false;
             const int count = parts.value(0).trimmed().toInt(&ok);
+            const QString keyword = parts.value(0).trimmed().toLower();
+
+            if (parts.size() >= 2 && !ok
+                && (keyword == QLatin1String("auto-fill")
+                    || keyword == QLatin1String("auto-fit"))) {
+                GridAutoRepeat recipe;
+                recipe.fit = keyword == QLatin1String("auto-fit");
+
+                const QString inner = QStringList(parts.mid(1)).join(QStringLiteral(", "));
+                GridTrackList repetition;
+                recipe.tracks = parseTrackList(inner, fontSize, rootFontSize, availableWidth,
+                                               &repetition);
+
+                if (out)
+                    out->autoRepeat = recipe;
+                // The names collected before the repetition name the line it
+                // starts at, and belong to the expansion rather than to the
+                // template, so they are carried across as leading names.
+                for (const QString &name : pendingNames)
+                    entries.append({GridTrack{}, {name}});
+                pendingNames.clear();
+                continue;
+            }
+
             if (parts.size() >= 2 && ok && count > 0) {
                 const QString inner = QStringList(parts.mid(1)).join(QStringLiteral(", "));
                 for (int i = 0; i < count; ++i) {
@@ -480,9 +517,17 @@ void resolveTrackSizes(QVector<GridTrack> *tracks, double availableSpace, double
     // A track's content floor and ceiling. For a track with no measured content
     // both are zero, which is what makes an empty `auto` track collapse.
     const auto floorOf = [](const GridTrack &track) {
-        // The sentinel a `minmax(auto, 1fr)` sets means "use the content
-        // minimum", which is what an auto minimum means for a track.
-        return track.contentMin < 0 ? qMax(0.0, track.contentMax) : qMax(0.0, track.contentMin);
+        switch (track.minKind) {
+        case GridTrack::MinKind::Fixed:
+            return qMax(0.0, track.floorPixels);
+        case GridTrack::MinKind::Zero:
+            return 0.0;
+        case GridTrack::MinKind::Auto:
+        case GridTrack::MinKind::MinContent:
+        case GridTrack::MinKind::MaxContent:
+            return qMax(0.0, track.contentMin);
+        }
+        return 0.0;
     };
     const auto ceilingOf = [](const GridTrack &track) { return qMax(0.0, track.contentMax); };
 
@@ -614,6 +659,123 @@ void resolveTrackSizes(QVector<GridTrack> *tracks, double availableSpace, double
     // its container overflows, exactly as a browser does: shrinking them would
     // silently produce a layout the author did not ask for, and would disagree
     // with every other engine.
+}
+
+double GridAutoRepeat::minRepetitionWidth(double fontSize, double rootFontSize,
+                                        double availableWidth) const
+{
+    // A repetition with no definite minimum - `1fr`, `auto`, `max-content` - has
+    // no size to fit more than one of, so exactly one is laid out. That is what a
+    // browser does too: `repeat(auto-fill, 1fr)` is a single column.
+    double total = 0;
+    for (const GridTrackEntry &entry : tracks) {
+        const GridTrack &track = entry.track;
+        switch (track.kind) {
+        case GridTrack::Kind::Fixed:
+            total += track.isPercentage ? track.value / 100.0 * availableWidth : track.value;
+            break;
+        case GridTrack::Kind::FitContent:
+            total += track.value;
+            break;
+        case GridTrack::Kind::Fraction:
+            // A flexible track is sized by the space left over, so on its own it
+            // says nothing about how many repetitions fit. Its `minmax()` floor
+            // does, though, and that floor is what the responsive idiom is built
+            // on: `repeat(auto-fill, minmax(250px, 1fr))` means "as many
+            // 250px-wide columns as fit, sharing the leftover space".
+            if (track.minKind == GridTrack::MinKind::Fixed)
+                total += qMax(0.0, track.floorPixels);
+            else
+                return -1;
+            break;
+        case GridTrack::Kind::MinContent:
+        case GridTrack::Kind::Auto:
+            // A zero minimum would repeat without bound, so one repetition is the
+            // only answer that means anything. `auto` with a definite floor -
+            // which a `minmax()` gives it - is handled above through the flexible
+            // case; a bare `auto` has none.
+            return -1;
+        case GridTrack::Kind::MaxContent:
+            return -1;
+        }
+    }
+    return tracks.isEmpty() ? -1 : total;
+}
+
+QVector<GridTrackEntry> GridTrackList::expand(double availableWidth, double fontSize,
+                                              double rootFontSize) const
+{
+    if (!autoRepeat || autoRepeat->tracks.isEmpty()) {
+        // No auto repetition, so the template is its own expansion. `tracks` is
+        // the parsed list, which the callers before this existed used directly.
+        QVector<GridTrackEntry> out = leadingTracks;
+        for (const GridTrack &track : tracks)
+            out.append({track, {}});
+        for (const GridTrackEntry &entry : trailingTracks)
+            out.append(entry);
+        return out;
+    }
+
+    const GridAutoRepeat &recipe = *autoRepeat;
+    const double repetitionWidth
+        = recipe.minRepetitionWidth(fontSize, rootFontSize, availableWidth);
+
+    // The number of repetitions that fit, floored at one so a grid is never
+    // empty. The gap between repetitions counts against the space available, and
+    // so does the gap that separates the repetition from the tracks around it.
+    const double gap = this->gap > 0 ? this->gap : 0;
+    int repetitions = 1;
+    if (repetitionWidth > 0 && availableWidth > 0) {
+        int fixedCount = leadingTracks.size() + trailingTracks.size();
+        int fitting = static_cast<int>((availableWidth + gap) / (repetitionWidth + gap));
+        if (fixedCount > 0) {
+            // The fixed tracks and their gaps come out of the space first.
+            double fixedWidth = 0;
+            for (const GridTrackEntry &entry : leadingTracks) {
+                fixedWidth += entry.track.kind == GridTrack::Kind::Fixed && !entry.track.isPercentage
+                    ? entry.track.value
+                    : 0;
+            }
+            for (const GridTrackEntry &entry : trailingTracks) {
+                fixedWidth += entry.track.kind == GridTrack::Kind::Fixed && !entry.track.isPercentage
+                    ? entry.track.value
+                    : 0;
+            }
+            const double remaining = availableWidth - fixedWidth - gap * (fixedCount + 1);
+            fitting = static_cast<int>((remaining + gap) / (repetitionWidth + gap));
+        }
+        repetitions = qMax(1, fitting);
+    }
+
+    QVector<GridTrackEntry> out = leadingTracks;
+
+    // `auto-fit` collapses the repetitions nothing landed in, which is what lets
+    // a few cards stretch to fill the row instead of huddling at one side. The
+    // ones that are kept are contiguous from the start, because that is where
+    // auto-placement fills them.
+    int emittedRepetitions = repetitions;
+    if (recipe.fit) {
+        // `auto-fit` drops the repetitions nothing landed in, which is what lets
+        // a few cards stretch across the row instead of huddling at one side.
+        if (autoPlacementItemCount > 0)
+            emittedRepetitions = qMin(repetitions, autoPlacementItemCount);
+    }
+
+    for (int i = 0; i < emittedRepetitions; ++i) {
+        // The first repetition keeps its line names, so `repeat(auto-fill,
+        // [card] 1fr)` still names the first column's lines. Later repetitions
+        // drop them: the same name on two lines is legal but would make
+        // `grid-column: card` ambiguous.
+        for (const GridTrackEntry &entry : recipe.tracks) {
+            GridTrackEntry copy = entry;
+            if (i > 0)
+                copy.namesBefore.clear();
+            out.append(copy);
+        }
+    }
+
+    out += trailingTracks;
+    return out;
 }
 
 double totalTrackSize(const QVector<GridTrack> &tracks, double gap)

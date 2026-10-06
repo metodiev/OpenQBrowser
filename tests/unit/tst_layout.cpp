@@ -132,6 +132,10 @@ private slots:
 
     // Grid.
     void laysOutGridColumns();
+    void dividesTheWidthBetweenManyFractionalColumns();
+    void treatsABareFlexAsMinmaxAutoWhenLayingOut();
+    void keepsTheAutomaticMinimumOfASingleSpanItem();
+    void spansColumnsWhenTheSpanHasNoStartLine();
     void distributesFractionalColumns();
     void spansColumns();
     void placesItemsByLineNumber();
@@ -1680,6 +1684,138 @@ void LayoutTest::placesItemsByLineNumber()
     // -1 is the last line, so -1 / -2 places the item in the final column.
     QVERIFY2(page.boxForId(QStringLiteral("last"))->borderBox().x() > 0.0,
              qPrintable(geometry(page.boxForId(QStringLiteral("last")))));
+}
+
+void LayoutTest::dividesTheWidthBetweenManyFractionalColumns()
+{
+    // CSS Grid 6.6: an item's automatic minimum is zero when any track it spans
+    // is flexible. This is what makes a many-column grid work at all.
+    //
+    // The pattern is everywhere - a 24-column grid with items spanning 12 - and
+    // the failure is dramatic: flooring every `1fr` at its content's minimum
+    // width makes twenty-four columns come out hundreds of pixels each, so the
+    // page becomes one enormous horizontal scroll. On a real news front page it
+    // turned a 1024px-wide layout into one 790,000px tall.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: repeat(24, 1fr); width: 960px; }
+          #left { grid-column: span 12; }
+          #right { grid-column: span 12; }
+        </style>
+        <div id="grid">
+          <div id="left">left half with plenty of text in it</div>
+          <div id="right">right half with plenty of text in it</div>
+        </div>)"));
+
+    renderer::Box *grid = page.boxForId(QStringLiteral("grid"));
+    QVERIFY(grid != nullptr);
+
+    // The grid is exactly the width it was given: no column overflows it.
+    QCOMPARE(grid->borderBox().width(), 960.0);
+
+    // Each of the twenty-four columns is the same share.
+    const double share = 960.0 / 24.0;
+    QVERIFY2(qFuzzyCompare(page.boxForId(QStringLiteral("left"))->borderBox().width(), share * 12),
+             qPrintable(geometry(page.boxForId(QStringLiteral("left")))));
+}
+
+void LayoutTest::spansColumnsWhenTheSpanHasNoStartLine()
+{
+    // `grid-column: span 2` with no start line: both lines are the "auto" marker
+    // when the item reaches auto-placement, so the span cannot be recovered by
+    // subtracting them. Without carrying it, the item lands in a single cell and
+    // a card meant to be half the row comes out a quarter of it.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: repeat(4, 1fr); width: 800px; }
+          #tall { grid-column: span 2; }
+        </style>
+        <div id="grid">
+          <div id="tall">spans two</div>
+          <div id="b">b</div><div id="c">c</div>
+        </div>)"));
+
+    renderer::Box *tall = page.boxForId(QStringLiteral("tall"));
+    QVERIFY(tall != nullptr);
+
+    // Two of four equal columns in 800px.
+    QCOMPARE(tall->borderBox().width(), 400.0);
+
+    // And the next item continues after it rather than overlapping.
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY2(b->borderBox().x() >= 400.0, qPrintable(geometry(b)));
+}
+
+void LayoutTest::treatsABareFlexAsMinmaxAutoWhenLayingOut()
+{
+    // A bare `<flex>` is defined as `minmax(auto, <flex>)` (CSS Grid 7.2.4), so
+    // the two spellings have to produce the same geometry. They did not: the bare
+    // form left the flexible track's floor at zero while `minmax(auto, 1fr)`
+    // resolved its minimum from the content, so a `repeat(24, ...)` grid laid out
+    // dozens of times too wide. Verified against Chrome, which reports identical
+    // columns for both spellings.
+    const QString markup = QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: %1; width: 900px; }
+        </style>
+        <div id="grid"><div id="a">short</div><div id="b">x</div></div>)");
+
+    Page bare(markup.arg(QStringLiteral("1fr 1fr")));
+    Page explicitForm(markup.arg(QStringLiteral("minmax(auto, 1fr) minmax(auto, 1fr)")));
+
+    renderer::Box *bareGrid = bare.boxForId(QStringLiteral("grid"));
+    QVERIFY2(bareGrid != nullptr, "the bare-flex grid produced no box");
+
+    // The grid is the width it was given: no column overflows it.
+    QCOMPARE(bareGrid->borderBox().width(), 900.0);
+
+    // The second column starts halfway across, so the columns are equal shares.
+    // An unequal start is the signature of a track wrongly floored at its
+    // content's width.
+    renderer::Box *bareB = bare.boxForId(QStringLiteral("b"));
+    renderer::Box *explicitB = explicitForm.boxForId(QStringLiteral("b"));
+    QVERIFY2(bareB && explicitB, "an item produced no box");
+
+    QCOMPARE(bareB->borderBox().x(), 450.0);
+    QCOMPARE(explicitB->borderBox().x(), bareB->borderBox().x());
+}
+
+void LayoutTest::keepsTheAutomaticMinimumOfASingleSpanItem()
+{
+    // CSS Grid 6.6 zeroes an item's automatic minimum when it spans more than one
+    // track, but a *single*-track item keeps it. So a wide item floors its own
+    // column and the second column starts further right than an equal share -
+    // which is what stops a long unbreakable string from being silently clipped.
+    //
+    // Chrome reports the second column at 597 for the single-span form and at 450
+    // for the spanning form of the same grid.
+    const QString markup = QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: 1fr 1fr; width: 900px; }
+          #a { width: 597px; %1 }
+        </style>
+        <div id="grid"><div id="a"></div><div id="b">x</div></div>)");
+
+    Page single(markup.arg(QString()));
+    Page spanning(markup.arg(QStringLiteral("grid-column: span 2;")));
+
+    renderer::Box *singleB = single.boxForId(QStringLiteral("b"));
+    renderer::Box *spanningB = spanning.boxForId(QStringLiteral("b"));
+    QVERIFY2(singleB && spanningB, "the grid produced no boxes");
+
+    // A single-span item keeps its automatic minimum, so the second column is
+    // pushed past the equal 450px share.
+    QVERIFY2(singleB->borderBox().x() > 450.0,
+             qPrintable(QStringLiteral("singleB.x()=%1").arg(singleB->borderBox().x())));
+
+    // Spanning both tracks zeroes that minimum, so neither column is widened:
+    // the second item gets exactly the equal 450px share rather than being
+    // pushed aside by the wide item. Chrome agrees on both values.
+    QCOMPARE(spanningB->borderBox().width(), 450.0);
 }
 
 void LayoutTest::autoPlacesItemsIntoRows()

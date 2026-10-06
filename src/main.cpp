@@ -3,7 +3,9 @@
 #include <QApplication>
 #include <QFile>
 #include <QImage>
+#include <QElapsedTimer>
 #include <QTextStream>
+#include <QTimer>
 
 #include "browser/Page.h"
 #include "browser/Tab.h"
@@ -343,10 +345,68 @@ int main(int argc, char **argv)
 
     int exitCode = 0;
 
-    QObject::connect(&page, &oqb::browser::Page::finished, [&] {
+    // The page's asynchronous work - a timer callback, or the handler of a
+    // promise fetch() settled - has to be given a chance to run before the report
+    // is produced. Without this a dump would show the page as it was the instant
+    // the load finished, and any page that fills itself in from a request would
+    // be reported empty.
+    //
+    // The clock is the host's own frame clock, driven here rather than in a
+    // widget: a headless run has no window, but the page still needs frames.
+    QElapsedTimer frameClock;
+    auto *frameTimer = new QTimer(&page);
+    frameTimer->setTimerType(Qt::PreciseTimer);
+    frameTimer->setInterval(16);
+
+    // A page never has to stop. A setInterval, or a request that resolves into
+    // another, keeps `hasPendingWork()` true indefinitely, and a dump has to
+    // answer eventually: the alternative is a command that hangs on any page
+    // with a polling loop, which is most of them. So the frames run for a bounded
+    // window and the report is produced from whatever the page had reached.
+    static constexpr int kSettleBudgetMs = 3000;
+    QElapsedTimer settleBudget;
+    bool reportEmitted = false;
+
+    auto report = [&] {
+        if (reportEmitted)
+            return;
+        reportEmitted = true;
+        frameTimer->stop();
         if (!produceReports(options, page))
             exitCode = 1;
         QCoreApplication::exit(exitCode);
+    };
+
+    QObject::connect(frameTimer, &QTimer::timeout, &page,
+                     [&page, &frameClock, &settleBudget, frameTimer, &report] {
+                         page.serviceScripts(frameClock.elapsed());
+
+                         // Nothing left to run, or the budget is gone. A new
+                         // frame is granted whenever something schedules work
+                         // again - which a fetch that resolves into another
+                         // fetch does - so the timer otherwise only stops when
+                         // the page has genuinely stopped.
+                         if (page.hasPendingScriptWork() && settleBudget.elapsed() < kSettleBudgetMs)
+                             return;
+
+                         frameTimer->stop();
+                         report();
+                     });
+
+    QObject::connect(&page, &oqb::browser::Page::settled, [&] { report(); });
+
+    QObject::connect(&page, &oqb::browser::Page::finished, [&] {
+        // A page with nothing outstanding is reported immediately. One that is
+        // still waiting is given frames until it settles, which is what lets a
+        // dump show what script produced rather than what the HTML contained.
+        if (!page.hasPendingScriptWork()) {
+            report();
+            return;
+        }
+
+        frameClock.start();
+        settleBudget.start();
+        frameTimer->start();
     });
 
     QObject::connect(&page, &oqb::browser::Page::failed, [&](const QString &message) {

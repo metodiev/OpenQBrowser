@@ -41,6 +41,8 @@ private slots:
     void recoversFromMalformedInput();
     void parsesMediaQueries();
     void evaluatesMediaQueries();
+    void matchesAMediaTypeFollowedByAnd();
+    void keepsConditionalRulesInDocumentOrder();
     // Cascade
     void appliesInheritance();
     void appliesSpecificity();
@@ -372,6 +374,64 @@ void CssTest::recoversFromMalformedInput()
     // parser reports the problem and carries on with the next rule.
     QVERIFY(!errors.isEmpty());
 }
+
+void CssTest::matchesAMediaTypeFollowedByAnd()
+{
+    // A media type is joined to its first condition by "and". Reading the type as
+    // "screen and" makes it compare unequal to "screen", and the query then never
+    // matches - so an entire stylesheet written with `@media screen and (...)`,
+    // which is how most real sites write their breakpoints, contributes nothing.
+    QVERIFY(css::MediaQuery::matches(QStringLiteral("screen and (max-width: 8192px)"), 1024, 768));
+    QVERIFY(css::MediaQuery::matches(QStringLiteral("screen and (min-width: 600px)"), 1024, 768));
+    QVERIFY(!css::MediaQuery::matches(QStringLiteral("screen and (max-width: 500px)"), 1024, 768));
+
+    // The keyword is optional and `only` still works in front of the type.
+    QVERIFY(css::MediaQuery::matches(QStringLiteral("only screen and (max-width: 8192px)"), 1024,
+                                     768));
+    QVERIFY(css::MediaQuery::matches(QStringLiteral("all and (max-width: 8192px)"), 1024, 768));
+    QVERIFY(!css::MediaQuery::matches(QStringLiteral("print and (max-width: 8192px)"), 1024, 768));
+
+    // Several conditions after the type.
+    QVERIFY(css::MediaQuery::matches(
+        QStringLiteral("screen and (min-width: 600px) and (max-width: 1200px)"), 1024, 768));
+    QVERIFY(!css::MediaQuery::matches(
+        QStringLiteral("screen and (min-width: 600px) and (max-width: 900px)"), 1024, 768));
+}
+
+void CssTest::keepsConditionalRulesInDocumentOrder()
+{
+    // A rule inside an at-rule is not *later* than an unconditional rule; it sits
+    // where it was written. The plain rules and the at-rule rules are collected
+    // from separate lists, so the source order has to be restored - otherwise a
+    // conditional rule outranks every plain rule, and the narrowest breakpoint in
+    // a stylesheet wins at every viewport width.
+    const auto sheet = css::Stylesheet::parse(QStringLiteral(
+        "#a { width: 100px }"
+        "@media screen and (max-width: 8192px) { #a { width: 111px } }"
+        "#a { height: 50px }"));
+
+    const auto rules = sheet.rulesForMedia(QStringLiteral("screen"), 1024);
+    QCOMPARE(rules.size(), 3);
+
+    // The order values must be strictly increasing in the order the rules appear.
+    QVERIFY2(rules.at(0).order < rules.at(1).order && rules.at(1).order < rules.at(2).order,
+             "rulesForMedia() reordered the rules");
+
+    // And the conditional rule sits in the middle, so the later plain rule wins
+    // on any property they share.
+    QVERIFY(rules.at(1).mediaQuery.contains(QStringLiteral("max-width")));
+
+    // A conditional rule written *last* must outrank an earlier plain one, which
+    // is the case that the aggregation order used to invert.
+    const auto trailing = css::Stylesheet::parse(QStringLiteral(
+        "#b { width: 100px }"
+        "@media screen and (max-width: 8192px) { #b { width: 111px } }"));
+    const auto trailingRules = trailing.rulesForMedia(QStringLiteral("screen"), 1024);
+    QCOMPARE(trailingRules.size(), 2);
+    QVERIFY2(trailingRules.last().order > trailingRules.first().order,
+             "the trailing conditional rule does not outrank the earlier plain one");
+}
+
 
 void CssTest::parsesMediaQueries()
 {

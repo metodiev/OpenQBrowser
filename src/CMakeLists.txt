@@ -57,6 +57,8 @@ add_library(oqb_core STATIC
     network/HttpMessage.cpp
     network/HttpClient.cpp
     network/Cache.cpp
+    network/FetchPolicy.cpp
+    network/ScriptFetch.cpp
     network/ResourceLoader.cpp
     dom/Node.cpp
     dom/Document.cpp
@@ -79,6 +81,7 @@ add_library(oqb_core STATIC
     javascript/ScriptEngine.cpp
     javascript/Engine.cpp
     javascript/Bindings.cpp
+    javascript/Fetch.cpp
     javascript/DomBindings.cpp
     javascript/ElementObjects.cpp
     javascript/Events.cpp

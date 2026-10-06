@@ -5,6 +5,7 @@
 #include <QStringList>
 
 #include <QHash>
+#include <QTimer>
 #include <QSizeF>
 
 #include <memory>
@@ -149,6 +150,11 @@ signals:
     void ready();
     /// Subresources have been resolved and the page is as complete as it will get.
     void finished();
+    /// The page has stopped doing work of its own. Unlike finished(), which
+    /// reports the end of loading, this fires only once script has also run out
+    /// of timers and settled every promise, so it is what a caller waits for
+    /// before reading the document a script built.
+    void settled();
     /// The load failed; an error page has been built and be displayed.
     void failed(const QString &message);
     /// The document title, once it is known.
@@ -249,6 +255,18 @@ private:
 
     /// True while a coalesced re-layout is already scheduled.
     bool m_relayoutScheduled = false;
+    /// How long the last layout pass took, in milliseconds. The debounce before
+    /// the next one scales with it.
+    double m_lastLayoutMs = 0;
+    /// Coalesces a burst of changes into one layout pass.
+    ///
+    /// Clearing the flag on the next event-loop turn is not enough: a page that
+    /// lazy-loads fifty images delivers them one per turn, so the flag is clear
+    /// again before the next arrives and the page is laid out once per image.
+    /// Measured on a real news front page that was 46 passes over the whole
+    /// subtree. A short timer defers the pass until the burst has stopped, which
+    /// is what the coalescing comment always claimed it did.
+    QTimer *m_relayoutTimer = nullptr;
 
     /// Stylesheets that arrived after the document, waiting for the next pass.
     QStringList m_lateStylesheets;

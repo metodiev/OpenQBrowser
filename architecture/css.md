@@ -148,6 +148,29 @@ Two details worth knowing:
 * Any unknown feature makes the query fail to match, which is the safe default and
   is what the class documentation states.
 
+### A media type can be joined to its conditions by `and`
+
+`@media screen and (max-width: 1007px)` is the usual spelling, and the `and` is a
+keyword rather than part of the type. Reading the type as `"screen and"` makes it
+compare unequal to `screen`, and because an unrecognised type never matches, the
+query silently fails. A stylesheet written entirely in that form then contributes
+**no rules at all** — which is what happened to a real news site's responsive
+grid, leaving it with no `grid-template-columns` and one column instead of four.
+`parseMediaTerm()` therefore strips a trailing `and` from the type.
+
+### A conditional rule is not later than an unconditional one
+
+`Stylesheet` keeps plain rules and at-rule rules in separate lists, and
+`rulesForMedia()` has to concatenate the matching ones. If it returns them
+concatenated, every `@media` rule outranks every plain rule regardless of where it
+was written, and the *narrowest* breakpoint in a stylesheet wins at every viewport
+width. The method therefore restores source order with a stable sort on
+`StyleRule::order`, which the parser assigns in document order.
+
+Both of these are pinned by `tests/unit/tst_css.cpp`: `matchesAMediaTypeFollowedByAnd()`
+and `keepsConditionalRulesInDocumentOrder()`. Each was checked by mutation —
+putting the `and` back, and removing the sort, make the corresponding test fail.
+
 ## The cascade
 
 `StyleEngine` is created with a `StyleContext` (viewport size, root font size,

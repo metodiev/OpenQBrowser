@@ -78,7 +78,7 @@ parsed and re-run through the CSS and layout stages; see `browser.md`.
 | `src/renderer` | `renderer/BoxTree.h`, `Layout.h`, `Painter.h` | Box tree, layout, painting. |
 | `src/storage` | `storage/History.h`, `storage/Bookmarks.h`, `storage/Cookies.h` | History list with a cursor; bookmark list; a cookie jar with RFC 6265 rules. |
 | `src/security` | `security/SecurityPolicy.h` | Origin checks, subresource downgrade rules, permissions, transport security. |
-| `src/javascript` | `javascript/ScriptEngine.h`, `Engine.h`, `Bindings.h` | The embedded QuickJS engine, its DOM bindings, events and timers. |
+| `src/javascript` | `javascript/ScriptEngine.h`, `Engine.h`, `Bindings.h`, `Fetch.h` | The embedded QuickJS engine, its DOM bindings, events, timers and `fetch`. |
 | `src/devtools` | `devtools/Inspector.h` | Text views of the DOM, styles, box tree and layout. |
 | `src/browser` | `browser/Page.h`, `Tab.h`, `BuiltinPages.h`, `PageSettings.h` | One navigation (`Page`), one tab (`Tab`), `about:` documents, user settings. |
 | `src/ui` | `ui/MainWindow.h`, `ui/PageView.h` | Qt Widgets shell: window, tabs, toolbar, and the widget that paints a page. |
@@ -169,7 +169,8 @@ the shared `HistoryStore` cursor for back and forward. `ui::MainWindow` owns one
 
 The stages are real but partial, and each has its own document:
 
-* No module scripts, no `fetch`, and no Web Storage; see [javascript.md](javascript.md).
+* No module scripts, no `XMLHttpRequest`, and no Web Storage; `fetch` is
+  implemented. See [javascript.md](javascript.md).
 * `display: grid` is parsed but laid out as ordinary blocks; flexbox is implemented.
 * Table display types are parsed and boxed, but there is no table layout algorithm.
 * `float` is stored on the style and never used for placement.

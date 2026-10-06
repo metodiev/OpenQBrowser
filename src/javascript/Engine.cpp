@@ -2,6 +2,8 @@
 
 #include "dom/Document.h"
 #include "javascript/Bindings.h"
+#include "javascript/Fetch.h"
+#include "network/ScriptFetch.h"
 #include "javascript/TimerQueue.h"
 
 #ifdef OPENQBROWSER_SCRIPTING
@@ -27,6 +29,14 @@ struct Context
     Bindings::ClassIds classes;
     TimerQueue timers;
     QList<ConsoleMessage> messages;
+    /// Where fetch() sends its requests. Not owned: the loader outlives the
+    /// engine, and a null provider is a valid state that fetch reports rather
+    /// than crashing on.
+    network::ScriptFetchProvider *fetchProvider = nullptr;
+    /// The live connection from the provider's completion signal. Kept so that
+    /// replacing a provider disconnects the old one: two providers both
+    /// delivering would settle promises against the wrong page.
+    QMetaObject::Connection fetchConnection;
 
     ~Context()
     {
@@ -35,6 +45,9 @@ struct Context
             // that owns those values is freed: the timers' callbacks, the
             // listeners, the wrapper cache and the detached nodes.
             timers.clear(context);
+            // The fetch bindings hold resolution functions, which are values of
+            // this context too, so they go before it does.
+            Fetch::destroyContext(context);
             Bindings::destroy(context);
             if (!JS_IsUndefined(global))
                 JS_FreeValue(context, global);
@@ -189,6 +202,15 @@ Engine::Engine(dom::Document *document)
     m_context->global = Bindings::install(m_context->context, m_context->classes,
                                           m_context->document, &m_context->timers,
                                           &m_context->messages);
+
+    // fetch() is installed here rather than by the bindings, because it needs the
+    // provider the browser attaches afterwards. Installing it now means a page
+    // always sees the global, and a page that finds it without a provider gets a
+    // rejection that says so rather than a missing function it has to guess about.
+    if (!JS_IsException(m_context->global)) {
+        Fetch::install(m_context->context, m_context->global,
+                       m_context->fetchProvider);
+    }
 }
 
 Engine::~Engine() = default;
@@ -202,6 +224,13 @@ void Engine::setDocument(dom::Document *document)
 {
     if (!isValid())
         return;
+
+    // A promise from the old document must not resolve into the new one: the
+    // handler would run against a tree the page no longer has, which is how a
+    // stale response overwrites a freshly loaded page. They are failed instead,
+    // so a page that kept the promise sees why.
+    if (document != m_context->document)
+        Fetch::cancelAll(m_context->context, QStringLiteral("the page was replaced"));
 
     m_context->document = document;
     Bindings::setDocument(m_context->context, document);
@@ -224,7 +253,14 @@ const TimerQueue &Engine::timers() const
 
 bool Engine::hasPendingWork() const
 {
-    return m_context && !m_context->timers.isEmpty();
+    if (!m_context)
+        return false;
+
+    // A fetch in flight is work: the promise it will settle has a handler that
+    // has not run yet. Leaving it out would let the frame clock stop while a
+    // request was outstanding, so a response that arrived would settle a promise
+    // whose handler never ran - the page would look frozen with no error.
+    return !m_context->timers.isEmpty() || Fetch::pendingCount(m_context->context) > 0;
 }
 
 bool Engine::takeDocumentTouched()
@@ -237,6 +273,32 @@ bool Engine::takeDocumentTouched()
 JSContext *Engine::context() const
 {
     return m_context ? m_context->context : nullptr;
+}
+
+void Engine::setFetchProvider(network::ScriptFetchProvider *provider)
+{
+    if (!isValid() || !provider)
+        return;
+
+    m_context->fetchProvider = provider;
+
+    // The bindings snapshot nothing: the provider is handed on so that the
+    // promise fetch() returns is registered with whoever will answer it.
+    Fetch::setProvider(m_context->context, provider);
+
+    // Replacing a provider is rare - a document keeps its loader - but two live
+    // connections would deliver every response twice, so the old one goes first.
+    QObject::disconnect(m_context->fetchConnection);
+
+    // The response is handed to the promise that is waiting for it. Delivery goes
+    // through the engine rather than to the provider, so script sees the result
+    // in the same realm it made the call from.
+    m_context->fetchConnection = QObject::connect(
+        provider, &network::ScriptFetchProvider::fetchFinished, provider,
+        [this](int requestId, const network::ScriptFetchResponse &response) {
+            if (isValid())
+                Fetch::deliver(m_context->context, requestId, response);
+        });
 }
 
 void Engine::setReadyState(const QString &state)

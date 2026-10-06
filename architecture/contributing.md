@@ -10,6 +10,17 @@ it.
 ```bash
 git clone <repository> && cd OpenQBrowser
 
+./scripts/build.sh --test
+
+# Make a change, then:
+./scripts/build.sh --test
+```
+
+`scripts/build.sh` configures, builds and fixes the macOS toolchain up, so the
+loop above is the whole setup. The equivalent raw commands, if you would rather
+run them yourself:
+
+```bash
 cmake --preset default
 cmake --build build -j
 ctest --test-dir build --output-on-failure
@@ -21,9 +32,10 @@ cmake --build build -j && ctest --test-dir build --output-on-failure
 The loop is short on purpose: a full build of this tree takes well under a minute
 on a laptop, and the whole test set runs in a few seconds, so there is no reason to
 batch changes. On macOS, if the link step fails with `tapi error: malformed file`
-from a CommandLineTools SDK, configure with
-`-DCMAKE_OSX_SYSROOT="$(xcrun --sdk macosx --show-sdk-path)"` — `build.md` explains
-the whole issue.
+and `unknown architecture`, the SDK is newer than the linker in use: run
+`export DEVELOPER_DIR=/Library/Developer/CommandLineTools`, or configure with
+`-DCMAKE_OSX_SYSROOT="$(xcrun --sdk macosx --show-sdk-path)"`. `build.md` explains
+the whole issue; `scripts/build.sh` detects and applies it for you.
 
 Handy while working on a stage:
 
@@ -32,6 +44,7 @@ QT_QPA_PLATFORM=offscreen ./build/bin/openqbrowser --dump-all about:home
 QT_QPA_PLATFORM=offscreen ./build/bin/openqbrowser --dump-layout /dev/stdout page.html
 QT_QPA_PLATFORM=offscreen ./build/bin/tst_css -functions          # list cases
 QT_QPA_PLATFORM=offscreen ./build/bin/tst_css appliesSpecificity   # run one case
+./scripts/run.sh --dump-all about:home    # the same, with the platform set for you
 ```
 
 `--dump-dom`, `--dump-layout`, `--dump-boxes`, `--dump-styles` and `--dump-all`

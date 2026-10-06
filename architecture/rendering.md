@@ -180,6 +180,72 @@ to `context.availableWidth`. It is used for auto-width inline-blocks and for
 floats that have no width of their own. After the clamp, the box is laid out as a
 block at that width and becomes an atomic inline.
 
+### A track's minimum is not a single number
+
+A grid track's `min-track-sizing-function` decides what its floor is, and the
+kinds are genuinely different — folding them into one "content minimum" field gets
+three things wrong at once. `GridTrack::minKind` carries the distinction:
+
+* **`Fixed`** — `minmax(300px, 1fr)`. The author's own floor, always kept.
+* **`Zero`** — `minmax(0, 1fr)`. A real floor of zero, which is the idiom that
+  lets a column shrink below its content instead of overflowing.
+* **`Auto`** — `auto`, and also a **bare** `<flex>`, because a bare `<flex>` is
+  defined as `minmax(auto, <flex>)` (§7.2.4). It is floored by the content of its
+  single-track items, unless §6.6 zeroes that.
+* **`MinContent` / `MaxContent`** — the author's explicit intrinsic minimum,
+  honoured even for an item that spans several tracks.
+
+Two consequences are worth stating because both were bugs here:
+
+* `1fr` and `minmax(auto, 1fr)` **must** render identically. They did not: the
+  bare form left the floor at zero while the explicit form resolved it from the
+  content, so a `repeat(24, 1fr)` grid came out 84× wider than `repeat(24,
+  minmax(auto, 1fr))` in the same container.
+* §6.6 zeroes an item's *automatic* minimum only when the item spans **more than
+  one track**, and only for an `auto` minimum. A single-track item still floors
+  its own column, which is what stops a long unbreakable string from being
+  clipped. `minmax(min-content, 1fr)` keeps its floor even when spanned.
+
+### Text measurement has to be cached
+
+`shrinkToFitWidth()` cannot be memoised per box, because the same box is measured
+at different available widths. What *can* be cached is the expensive part: the
+per-word advance widths, which depend only on the font and the string.
+
+`shrinkToFitWidth()` walks a subtree, but it is called repeatedly across a page's
+lifetime — once per inline-block per pass, and once per float that has no width of
+its own. On `bbc.com` this reached **2.77 million** `fontFor()` calls, each one
+resolving a font descriptor and shaping with HarfBuzz. The measurement cache
+(`TextMetric`, `LayoutEngine::measure()` and `measureCharacter()`, keyed by font
+and string) reduced that page from 85s to 48s on its own.
+
+The cache key is one string built from everything that changes the shaping
+result — point size, weight, italic flag, font families — followed by the text
+itself. It is deliberately a single flat key rather than a nested map, because
+the hot path is millions of calls and a level of indirection per call would cost
+more than the longer key does. `QFontMetricsF` then runs once per distinct
+(font, string) pair instead of once per call.
+
+The text cache is bounded at `kMaxEntries` (200,000) and cleared wholesale when it
+fills, rather than evicting one entry: a page that generates a unique string per
+element would otherwise grow it without limit, and a wholesale clear keeps the
+common case a single hash lookup. `measureCharacter()` has its own table keyed the
+same way, for the per-character widths used to break a line inside a word.
+
+### A pass is expensive, so passes are coalesced
+
+A single layout pass over `bbc.com` costs roughly 670ms. A page that changes while
+it loads would otherwise re-lay-out once per arriving image, and 23 passes cost
+15.7s of the 22s the page took.
+
+`Page` schedules a relayout instead of running one immediately, on a `QTimer`
+whose interval **scales with the cost of the last pass**
+(`kRelayoutDebounceFactor = 1.5`, clamped between `kRelayoutDebounceMs` and
+`kRelayoutDebounceMaxMs`). A fixed 60ms debounce cannot help here: it expires long
+before a 670ms pass has finished, so every image still starts its own pass.
+Scaling the delay to the work means the timer only fires once the engine is
+genuinely idle. That change took the page from 23s to 11.4s.
+
 ### Replaced elements
 
 `layoutReplaced(box, context)` implements CSS 2.2 §10.3.2: with both dimensions
@@ -233,7 +299,7 @@ implemented and documented below, so they are not listed here.
 | `vertical-align` | Lines are always baseline-aligned. |
 | `text-align` | A line always starts at the containing block's left content edge. |
 | `overflow` | Nothing clips; no scroll container is established inside a page. |
-| `display: grid` | **Implemented.** Track sizing (`fr`, `px`, `%`, `auto`, `min-content`, `max-content`, `fit-content()`, `minmax()`, `repeat()`), line, span and named placement, auto-placement, gaps and alignment. See the Grid section below. |
+| `display: grid` | **Implemented.** Track sizing (`fr`, `px`, `%`, `auto`, `min-content`, `max-content`, `fit-content()`, `minmax()`, `repeat()`), `repeat(auto-fill/auto-fit, …)`, line, span and named placement, auto-placement, gaps and alignment. See the Grid section below. |
 | `display: table*` | Rows and cells stack as ordinary blocks at full width. |
 
 A reader should expect these features to have **no layout effect** rather than to
@@ -455,6 +521,33 @@ block. Storing the text and parsing it in `layoutGridChildren()` keeps that
 deferred, at the cost of re-parsing per layout — which is what the style arena
 already accepts for every other resolved value.
 
+### `repeat()` is parsed, but `auto-fill` is not expanded
+
+An integer repetition is expanded at parse time — `repeat(3, 100px)` is simply
+three tracks. `repeat(auto-fill, ...)` and `repeat(auto-fit, ...)` **cannot** be:
+how many repetitions fit depends on the container's final width, which is not
+known when the template is parsed.
+
+So an auto repetition is kept as a `GridAutoRepeat` recipe and resolved per
+layout, once the container width is known. Two rules matter there:
+
+* A repetition with no definite minimum — `1fr`, `auto` — yields exactly **one**
+  track. Only a minimum lets more than one fit.
+* `auto-fit` collapses repetitions that no item landed in; `auto-fill` keeps the
+  empty track. Without the item count, `auto-fit` looks identical to `auto-fill`.
+
+`minRepetitionWidth()` therefore has to read the floor out of `minmax(250px, 1fr)`
+rather than the max. Reporting the `1fr` as the track's width is what made
+`repeat(auto-fill, minmax(250px, 1fr))` a single column with every item stacked —
+a real bug, found on `bbc.com`, where that idiom is the whole card layout.
+
+### A span with no start line is still a span
+
+`grid-column: span 2` leaves *both* lines at the "auto" marker, so there is no
+pair of numbers to subtract and `columnEnd - columnStart` is zero. The span has to
+be carried as a separate hint and applied when the auto-placer chooses the start.
+Losing it lays a two-column card into one cell.
+
 ### The three phases
 
 They cannot be interleaved, and each ordering mistake produces a specific,
@@ -474,6 +567,12 @@ recognisable failure:
 
 * **Base sizes.** A definite track takes its length; an intrinsic one takes its
   content minimum.
+* **A flexible track's automatic minimum is zero** (§6.6). This is the rule that
+  keeps `repeat(24, 1fr)` inside its container: if each of the 24 tracks were
+  floored at its content width, a 945px parent would produce 2136px columns and a
+  page 790,397px tall. The rule applies to a track with a *flexible* max sizing
+  function, and only to the item's **automatic** minimum — an explicit
+  `minmax(300px, 1fr)` floor is the author's and is kept.
 * **Flexible distribution** (§12.7.1) — *before* auto tracks grow. The algorithm
   is implemented as written, including the restart rule: a flexible track whose
   floor exceeds its share is made inflexible and the rest are sized again without
@@ -533,16 +632,21 @@ zero-height.
 
 ### Tests
 
-`tst_grid.cpp` (29 cases) covers the parser and the sizing arithmetic: every track
+`tst_grid.cpp` (33 cases) covers the parser and the sizing arithmetic: every track
 kind, percentages against the available width, `minmax()` in both forms,
 `repeat()`, line names surviving a repetition, an unknown track being skipped
 without dropping the list, every placement form including spans and negative
-lines, and the `grid-area` shorthand's mirroring rule.
+lines, and the `grid-area` shorthand's mirroring rule. `parsesAutoFillRepeat` and
+`keepsAutoFitRepeatAsARecipe` pin the parse-time/expand-time split described
+above.
 
-`tst_layout.cpp` adds ten grid layout cases: fixed columns, fractional
+`tst_layout.cpp` adds fourteen grid layout cases: fixed columns, fractional
 distribution, a spanning item, line-number and negative-line placement,
 auto-placement wrapping, the row gap, content-sized rows, stretch, centring, and
-implicit rows for extra items.
+implicit rows for extra items. `dividesTheWidthBetweenManyFractionalColumns`
+(`repeat(24, 1fr)` in a fixed-width parent) and `spansColumnsWhenTheSpanHasNoStartLine`
+are the two regressions for the bugs found on `bbc.com`; both were mutation-tested,
+and each fails with the old behaviour (685.7px instead of 480px).
 
 Three mutations were used to check the harness earns its place — ignoring the flex
 factor, disabling the cursor wrap, and dropping the row gap each make the relevant
@@ -740,3 +844,7 @@ makes clicking text inside a link work.
   `Page::buildLayout()` reruns the whole pipeline when a late stylesheet or image
   arrives, and a document that nests deeper than 500 blocks is truncated with a
   warning.
+* A layout pass on a large page costs hundreds of milliseconds, and the page
+  coalesces passes rather than running one per arriving subresource. A page whose
+  height changes while it loads therefore settles a fraction of a second later
+  than the last resource, not instantly.

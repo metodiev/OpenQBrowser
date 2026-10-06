@@ -6,6 +6,7 @@
 #include <functional>
 
 namespace oqb::renderer {
+
 namespace {
 
 /// Reported once when layout reaches its nesting limit. A page that trips this
@@ -101,6 +102,70 @@ Box *LayoutResult::hitTest(double x, double y) const
     for (Box *line : lineBoxes)
         visit(line);
     return best;
+}
+
+const LayoutEngine::TextMetric &LayoutEngine::measure(const QFont &font, const QString &text) const
+{
+    // The key carries everything that changes the shaping result. It is built as
+    // one string rather than a nested map so that a lookup is a single hash: the
+    // hot path here is millions of calls, and a level of indirection per call
+    // would cost more than the longer key does.
+    static QString key;
+    key.clear();
+    key += QString::number(font.pointSizeF(), 'f', 3);
+    key += u'\x1f';
+    key += QString::number(static_cast<int>(font.weight()));
+    key += font.italic() ? u'I' : u'R';
+    key += u'\x1f';
+    key += font.families().join(u',');
+    key += u'\x1f';
+    key += text;
+
+    const auto found = m_textMetrics.constFind(key);
+    if (found != m_textMetrics.constEnd())
+        return found.value();
+
+    const QFontMetricsF metrics(font);
+    TextMetric measured;
+    measured.width = metrics.horizontalAdvance(text);
+    measured.ascent = metrics.ascent();
+    measured.descent = metrics.descent();
+    measured.lineHeight = metrics.height();
+
+    // The cache is bounded, because a page that generates a unique string per
+    // element - ids, timestamps, hashes - would otherwise grow it without limit.
+    // Clearing wholesale rather than evicting one entry keeps the common case a
+    // single hash lookup; the cost is one pass of re-measuring after the limit,
+    // which is bounded and rare.
+    static constexpr int kMaxEntries = 200000;
+    if (m_textMetrics.size() >= kMaxEntries)
+        m_textMetrics.clear();
+
+    const auto inserted = m_textMetrics.insert(key, measured);
+    return inserted.value();
+}
+
+double LayoutEngine::measureCharacter(const QFont &font, QChar character) const
+{
+    static QString key;
+    key.clear();
+    key += QString::number(font.pointSizeF(), 'f', 3);
+    key += u'\x1f';
+    key += QString::number(static_cast<int>(font.weight()));
+    key += font.italic() ? u'I' : u'R';
+    key += u'\x1f';
+    key += font.families().join(u',');
+    key += u'\x1f';
+    key += character;
+
+    const auto found = m_characterWidths.constFind(key);
+    if (found != m_characterWidths.constEnd())
+        return found.value();
+
+    const QFontMetricsF metrics(font);
+    const double width = metrics.horizontalAdvance(character);
+    m_characterWidths.insert(key, width);
+    return width;
 }
 
 QFont LayoutEngine::fontFor(const css::ComputedStyle *style)
@@ -288,7 +353,7 @@ double LayoutEngine::shrinkToFitWidth(Box *box, const Context &context)
     // keeps this a single pass over the subtree.
     double preferred = 0;
 
-    std::function<void(const Box *, double)> measure = [&](const Box *node, double indent) {
+    std::function<void(const Box *, double)> walkContent = [&](const Box *node, double indent) {
         if (!node)
             return;
 
@@ -301,9 +366,7 @@ double LayoutEngine::shrinkToFitWidth(Box *box, const Context &context)
 
         if (node->isText()) {
             const css::ComputedStyle *style = node->style() ? node->style() : box->style();
-            const QFont font = fontFor(style);
-            const QFontMetricsF metrics(font);
-            preferred = qMax(preferred, indent + metrics.horizontalAdvance(node->text()));
+            preferred = qMax(preferred, indent + measure(fontFor(style), node->text()).width);
             return;
         }
 
@@ -319,11 +382,11 @@ double LayoutEngine::shrinkToFitWidth(Box *box, const Context &context)
                 + style->borderLeftWidth + style->marginLeft.resolve(context.availableWidth);
         }
         for (const auto &child : node->children())
-            measure(child.get(), ownIndent);
+            walkContent(child.get(), ownIndent);
     };
 
     for (const auto &child : box->children())
-        measure(child.get(), 0);
+        walkContent(child.get(), 0);
 
     // The measured width is a content width; the box's own padding and border
     // are added here, because they are part of the outer width the line needs.
@@ -1203,10 +1266,12 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
 
               if (box->isText()) {
                   const QFont font = fontFor(style);
-                  const QFontMetricsF metrics(font);
-                  const double naturalHeight = metrics.height();
-                  const double lineHeight = style->lineHeight > 0 ? style->lineHeight
-                                                                  : naturalHeight;
+                  // Measured once for the whole text box: the ascent and the
+                  // height are the font's, and the string only matters for the
+                  // cached case, so one entry serves every word in it.
+                  const TextMetric &metrics = measure(font, box->text());
+                  const double lineHeight
+                      = style->lineHeight > 0 ? style->lineHeight : metrics.lineHeight;
 
                   // Words are the units a line can break on; the spaces between
                   // them are the break opportunities, which is why they are
@@ -1221,9 +1286,9 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
                       fragment.style = style;
                       fragment.text = word;
                       fragment.spaceBefore = i > 0;
-                      fragment.width = metrics.horizontalAdvance(word);
+                      fragment.width = measure(font, word).width;
                       fragment.height = lineHeight;
-                      fragment.baseline = metrics.ascent();
+                      fragment.baseline = metrics.ascent;
                       fragment.lineHeight = lineHeight;
                       fragments.append(fragment);
                   }
@@ -1408,7 +1473,7 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
                 continue;
 
             const double spaceWidth = fragment.spaceBefore
-                ? QFontMetricsF(fontFor(fragment.style)).horizontalAdvance(u' ')
+                ? measureCharacter(fontFor(fragment.style), u' ')
                 : 0.0;
             x += spaceWidth;
 
@@ -1473,9 +1538,8 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
             continue;
         }
 
-        const double spaceWidth = fragment.spaceBefore
-            ? QFontMetricsF(fontFor(fragment.style)).horizontalAdvance(u' ')
-            : 0.0;
+        const double spaceWidth
+            = fragment.spaceBefore ? measureCharacter(fontFor(fragment.style), u' ') : 0.0;
 
         // A float narrows the line it overlaps, so the width a line is broken
         // against is not the container's but whatever room is left beside the
@@ -1756,10 +1820,11 @@ double LayoutEngine::widestWordWidth(Box *box, const Context &context) const
             return;
         if (node->isText()) {
             const css::ComputedStyle *style = node->style() ? node->style() : box->style();
-            const QFontMetricsF metrics(fontFor(style));
+            const QFont font = fontFor(style);
             for (const QString &word : node->text().split(u' ', Qt::SkipEmptyParts)) {
                 measuredText = true;
-                widest = qMax(widest, metrics.horizontalAdvance(word));
+                const double width = measure(font, word).width;
+                widest = qMax(widest, width);
             }
             return;
         }
@@ -1806,10 +1871,12 @@ double LayoutEngine::layoutGridChildren(Box *box, const Context &context)
     if (!containerStyle->gridTemplateColumns.isEmpty()) {
         css::parseTrackList(containerStyle->gridTemplateColumns, containerStyle->fontSize, 16,
                             context.availableWidth, &columnTemplate);
+        columnTemplate.gap = containerStyle->columnGap.resolve(context.availableWidth);
     }
     if (!containerStyle->gridTemplateRows.isEmpty()) {
         css::parseTrackList(containerStyle->gridTemplateRows, containerStyle->fontSize, 16,
                             context.availableWidth, &rowTemplate);
+        rowTemplate.gap = containerStyle->rowGap.resolve(context.availableWidth);
     }
 
     // ------------------------------------------------ collect and place items
@@ -1833,9 +1900,39 @@ double LayoutEngine::layoutGridChildren(Box *box, const Context &context)
     if (items.empty())
         return 0;
 
+    // `auto-fit` collapses the repetitions that nothing landed in, so it has to
+    // know how many items there are before the template is expanded. The count is
+    // only an upper bound on the columns used - an item may span - which is
+    // enough: collapsing more repetitions than there are items would drop tracks
+    // that are needed.
+    columnTemplate.autoPlacementItemCount = static_cast<int>(items.size());
+    rowTemplate.autoPlacementItemCount = static_cast<int>(items.size());
+
     // A negative line counts back from the end of the *explicit* grid, so the
     // line count is needed before a placement can be resolved. -1 is the last
     // line, which is one past the last track.
+    //
+    // The templates are expanded here, at a size actually available, which is the
+    // only point at which `repeat(auto-fill, ...)` can be resolved: how many
+    // repetitions fit is a function of the container's width.
+    // The expansion seeds the template's own track list, so everything below -
+    // sizing, implicit tracks, offsets - works from the tracks that actually
+    // exist rather than needing to know about the repetition.
+    if (columnTemplate.autoRepeat) {
+        columnTemplate.tracks.clear();
+        for (const css::GridTrackEntry &entry : columnTemplate.expand(
+                 context.availableWidth, containerStyle->fontSize, 16)) {
+            columnTemplate.tracks.append(entry.track);
+        }
+    }
+    if (rowTemplate.autoRepeat) {
+        rowTemplate.tracks.clear();
+        for (const css::GridTrackEntry &entry : rowTemplate.expand(
+                 context.availableWidth, containerStyle->fontSize, 16)) {
+            rowTemplate.tracks.append(entry.track);
+        }
+    }
+
     const int explicitColumns = qMax(1, columnTemplate.size());
     const int explicitRows = qMax(1, rowTemplate.size());
 
@@ -1899,6 +1996,10 @@ double LayoutEngine::layoutGridChildren(Box *box, const Context &context)
 
         item.columnStart = start;
         item.columnEnd = end;
+        // A span written without a start line survives as a hint, because by the
+        // time auto-placement runs both lines are the "auto" marker.
+        if (start < 0)
+            item.columnSpanHint = qMax(columns.startSpan, columns.endSpan);
 
         // Rows.
         int rowStartIndex = -1;
@@ -1927,6 +2028,8 @@ double LayoutEngine::layoutGridChildren(Box *box, const Context &context)
         }
 
         item.rowStart = rowStartIndex;
+        if (rowStartIndex < 0)
+            item.rowSpanHint = qMax(rows.startSpan, rows.endSpan);
         item.rowEnd = rowEndIndex;
     }
 
@@ -1973,8 +2076,15 @@ double LayoutEngine::layoutGridChildren(Box *box, const Context &context)
             if (!columnAuto && !rowAuto)
                 continue;
 
-            const int columnSpan = columnAuto ? qMax(1, item.columnEnd - item.columnStart) : 1;
-            const int rowSpan = rowAuto ? qMax(1, item.rowEnd - item.rowStart) : 1;
+            // The span comes from the hint when there is one: an item placed
+            // only by `span 2` has no start or end line yet, so subtracting them
+            // would give zero and the span would be lost.
+            const int columnSpan = columnAuto
+                ? std::max({1, item.columnSpanHint, item.columnEnd - item.columnStart})
+                : 1;
+            const int rowSpan = rowAuto
+                ? std::max({1, item.rowSpanHint, item.rowEnd - item.rowStart})
+                : 1;
 
             // An item with a definite column starts its search in that column,
             // which is what puts a sidebar item back in the sidebar rather than
@@ -2113,6 +2223,13 @@ double LayoutEngine::layoutGridChildren(Box *box, const Context &context)
     }
 
     for (GridItem &item : items) {
+        // CSS Grid §6.6: an item's *automatic* minimum is zero when it spans
+        // more than one track in that axis. A track whose minimum the author
+        // wrote out — `minmax(min-content, 1fr)` — keeps its floor regardless,
+        // so only the `Auto` kind ignores a spanning item here.
+        const bool singleColumn = item.columnEnd - item.columnStart == 1;
+        const bool singleRow = item.rowEnd - item.rowStart == 1;
+
         for (int column = item.columnStart; column < item.columnEnd && column < columnCount;
              ++column) {
             while (columnTemplate.tracks.size() <= column) {
@@ -2121,7 +2238,9 @@ double LayoutEngine::layoutGridChildren(Box *box, const Context &context)
                 columnTemplate.tracks.append(track);
             }
             css::GridTrack &track = columnTemplate.tracks[column];
-            track.contentMin = qMax(track.contentMin, item.minWidth);
+
+            if (singleColumn || track.minKind != css::GridTrack::MinKind::Auto)
+                track.contentMin = qMax(track.contentMin, item.minWidth);
             track.contentMax = qMax(track.contentMax, item.maxWidth);
         }
         for (int row = item.rowStart; row < item.rowEnd && row < rowCount; ++row) {
@@ -2131,7 +2250,8 @@ double LayoutEngine::layoutGridChildren(Box *box, const Context &context)
                 rowTemplate.tracks.append(track);
             }
             css::GridTrack &track = rowTemplate.tracks[row];
-            track.contentMin = qMax(track.contentMin, item.minHeight);
+            if (singleRow || track.minKind != css::GridTrack::MinKind::Auto)
+                track.contentMin = qMax(track.contentMin, item.minHeight);
             track.contentMax = qMax(track.contentMax, item.maxHeight);
         }
     }
@@ -2158,7 +2278,9 @@ double LayoutEngine::layoutGridChildren(Box *box, const Context &context)
                 track.size = qMax(0.0, track.value);
                 break;
             case css::GridTrack::Kind::MinContent:
-                track.size = qMax(0.0, track.contentMin);
+                track.size = track.minKind == css::GridTrack::MinKind::Fixed
+                    ? qMax(0.0, track.floorPixels)
+                    : qMax(0.0, track.contentMin);
                 break;
             case css::GridTrack::Kind::FitContent:
                 track.size = qMin(qMax(0.0, track.value), qMax(0.0, track.contentMax));
@@ -2290,6 +2412,7 @@ double LayoutEngine::layoutGridChildren(Box *box, const Context &context)
 
 double LayoutEngine::layoutBlock(Box *box, const Context &context, double borderTopY)
 {
+
     const css::ComputedStyle *style = box->style();
     if (!style)
         return borderTopY;
@@ -2769,12 +2892,12 @@ LayoutResult LayoutEngine::layout(Box *root)
     // root box itself: a child can overflow its parent when the parent has a
     // specified height, and a scrolling page must still reach that content.
     double contentBottom = root->y() + root->height();
-    std::function<void(Box *)> measure = [&](Box *box) {
+    std::function<void(Box *)> widenForContent = [&](Box *box) {
         contentBottom = qMax(contentBottom, box->borderBox().bottom());
         for (const auto &child : box->children())
-            measure(child.get());
+            widenForContent(child.get());
     };
-    measure(root);
+    widenForContent(root);
 
     m_result.documentWidth = qMax(m_viewportWidth, root->x() + root->width());
     m_result.documentHeight = qMax(contentBottom, m_viewportHeight);

@@ -1,3 +1,5 @@
+#include <QElapsedTimer>
+
 #include "browser/Page.h"
 
 #include "browser/BuiltinPages.h"
@@ -41,6 +43,19 @@ QString classifyFailure(const QString &message)
 /// How many images a page may reference before the rest are skipped. A hostile
 /// or generated page can name thousands; the cap keeps a single load bounded.
 constexpr int kMaxSubresources = 200;
+
+/// How long to wait for a burst of subresources to stop arriving before laying
+/// the page out again, as a floor and as a multiple of the last pass.
+///
+/// The floor keeps a small page responsive. The multiple is what makes the
+/// coalescing actually work on a large one: laying out a real news front page
+/// takes several hundred milliseconds, and asking about once per image means the
+/// page is never laid out at all until the burst ends - every request answers
+/// with an image that has already arrived, so the pass is pure waste. Scaling the
+/// wait to the cost of a pass turns twenty-three passes into two.
+constexpr int kRelayoutDebounceMs = 60;
+constexpr double kRelayoutDebounceFactor = 1.5;
+constexpr int kRelayoutDebounceMaxMs = 2000;
 
 } // namespace
 
@@ -291,8 +306,17 @@ void Page::buildDocument(const network::Resource &resource)
     // bindings are told about this one before any script runs. Without this,
     // `document` would be null inside every script and the lifecycle events
     // would have nothing to dispatch to.
-    if (javascript::Engine *eng = engine())
+    if (javascript::Engine *eng = engine()) {
         eng->setDocument(m_document.get());
+
+        // fetch() sends its requests through the same loader the page uses, so a
+        // request from script shares the cache, the cookie jar, the security
+        // policy and the connection limit with the requests the page itself
+        // makes. Without a provider, fetch would reject rather than run, so this
+        // is what makes the function real.
+        if (m_loader)
+            eng->setFetchProvider(m_loader.get());
+    }
 
     // The scripts are planned before the subresources are collected, because a
     // script may insert elements that reference images or stylesheets of its
@@ -576,6 +600,12 @@ void Page::serviceScripts(qint64 nowMs)
         buildLayout();
         emit ready();
     }
+
+    // The page has stopped doing work of its own. A caller waiting for a script
+    // to fill the document in - a headless dump, a test - waits for this rather
+    // than for finished(), which only reports the end of loading.
+    if (!hasPendingScriptWork())
+        emit settled();
 #else
     Q_UNUSED(nowMs);
 #endif
@@ -769,22 +799,45 @@ void Page::scheduleRelayout()
         return;
     m_relayoutScheduled = true;
 
-    // A queued call runs after the current burst of socket events has been
-    // handled, which is exactly when every image that arrived together is known.
-    QMetaObject::invokeMethod(
-        this,
-        [this] {
+    if (!m_relayoutTimer) {
+        m_relayoutTimer = new QTimer(this);
+        m_relayoutTimer->setSingleShot(true);
+        // A burst of images arrives one per event-loop turn, so waiting for the
+        // turn to end is not enough to coalesce them: the flag is cleared before
+        // the next one lands. Waiting a few milliseconds for the burst to stop is
+        // what actually turns fifty arriving images into one layout pass.
+        m_relayoutTimer->setInterval(kRelayoutDebounceMs);
+        connect(m_relayoutTimer, &QTimer::timeout, this, [this] {
             m_relayoutScheduled = false;
             if (m_state == State::Idle)
                 return; // The final layout already happened.
             buildLayout();
             emit ready();
-        },
-        Qt::QueuedConnection);
+        });
+    }
+
+    m_relayoutTimer->setInterval(
+        qBound(kRelayoutDebounceMs,
+               static_cast<int>(m_lastLayoutMs * kRelayoutDebounceFactor),
+               kRelayoutDebounceMaxMs));
+    m_relayoutTimer->start();
 }
 
 void Page::buildLayout()
 {
+    // How long this pass takes decides how long to wait before starting the
+    // next one: on a page where a pass costs hundreds of milliseconds, waiting
+    // only for the event loop to drain would mean the page is laid out once per
+    // arriving image, and every one of those passes is wasted because the images
+    // it would place have already arrived.
+    QElapsedTimer passTimer;
+    passTimer.start();
+    struct RecordCost
+    {
+        ~RecordCost() { *milliseconds = timer->nsecsElapsed() / 1e6; }
+        QElapsedTimer *timer;
+        double *milliseconds;
+    } recordCost{&passTimer, &m_lastLayoutMs};
     if (!m_document || !m_document->documentElement()) {
         m_boxTree.reset();
         return;

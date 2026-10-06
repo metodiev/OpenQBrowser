@@ -46,6 +46,7 @@ still renders, and reports honestly that scripts do not run.
 | `Events.h/.cpp` | 800 | Listener registry, the dispatch walk, event objects |
 | `EventsMembers.cpp` | 190 | `Event`, `CustomEvent`, `MouseEvent`, `KeyboardEvent` constructors |
 | `Globals.cpp` | 330 | `setTimeout` and friends, `console` |
+| `Fetch.h/.cpp` | 800 | `fetch`, `Response`, `Headers`, the provider seam and the promise registry |
 | `WindowBindings.cpp` | 310 | `navigator`, `location`, `screen`, `alert`, the API stubs |
 | `TimerQueue.h/.cpp` | 390 | Timer scheduling, delay clamping, the frame clock |
 
@@ -248,6 +249,100 @@ stating:
 
 Each of those was a real bug found by the tests in `tests/integration/tst_scripting.cpp`.
 
+## fetch()
+
+`fetch` is real. A request from script goes through the same `ResourceLoader` the
+page uses, so it shares the cache, the cookie jar, the security policy and the
+connection limit with the requests the page itself makes.
+
+```js
+const response = await fetch('/api/items', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({name: 'openq'}),
+});
+if (!response.ok) throw new Error(response.statusText);
+const data = await response.json();
+```
+
+### The promise has to outlive the call
+
+A `fetch` returns a promise that settles on a later turn, which is the whole
+point of it: a page attaches its handler after the call has already returned.
+That needs two things the engine already provides, plumbed together:
+
+* **The job queue.** `evaluate()` drains it after every script, and
+  `runDueTimers()` drains it after every frame. A response delivered between the
+  two settles there.
+* **The frame clock.** `Engine::hasPendingWork()` counts an in-flight request as
+  work, so the browser keeps pumping frames while one is outstanding. Leaving it
+  out would let the clock stop with a request in the air, and the promise would
+  never settle: the page would look frozen with no error to explain it.
+
+`Engine::setFetchProvider()` connects the loader's completion signal to the
+promise that is waiting, keyed by the id the loader returned.
+
+A windowed run already has a frame clock (`ui::PageView`). A headless run has no
+widget, so `main.cpp` drives one itself and waits for `Page::settled()` — the
+signal that fires once script has run out of timers *and* settled every promise —
+before producing a dump. That wait is bounded by a deadline of a few seconds,
+because a page never has to go quiet: a `setInterval`, or a request that resolves
+into another, keeps work outstanding indefinitely, and a dump has to answer
+eventually rather than hanging on any page with a polling loop.
+
+### What a page may send
+
+The rules live in `FetchPolicy`, as pure functions, because they are the security
+boundary of the feature and a rule that could only be exercised through a socket
+could not be tested properly.
+
+| Refused | Why |
+| --- | --- |
+| `CONNECT`, `TRACE`, `TRACK` | A tunnel through the browser, or a reflection of the request |
+| A method that is not a valid token | It would not survive being written into a request line |
+| `Host` | A page could address a different virtual host at the same address |
+| `Content-Length`, `Transfer-Encoding` | A page could frame a body other than the one it sent |
+| `Cookie`, `Origin`, `Referer` | A page could forge its own provenance or reach a session it cannot read |
+| `Proxy-*`, `Sec-*` | Reserved for the proxy and the browser's own security decisions |
+| A value containing CR or LF | Header injection |
+
+A refused header is **dropped**, not fatal: the page asked for something the
+browser will not do, not made a mistake it needs to hear about.
+
+### What a page may read
+
+A cross-origin response is readable only when its `Access-Control-Allow-Origin`
+grants the document's origin. The comparison uses `Url::serialisedOrigin()`,
+which omits a default port, because that is how every server writes the header:
+matching against `origin()` (which keeps the port, so that an origin is a
+comparable identity) would reject every grant made on a default port.
+
+Two rules matter more than the rest:
+
+* **A wildcard does not authorise a request that carried credentials.** A server
+  that answers `*` has said it does not care who reads the response, which is not
+  a decision to expose session-bound data to a particular origin.
+* **A response's headers are filtered, not just its body.** A header can describe
+  an internal request id or a rate-limit bucket. Without
+  `FetchPolicy::crossOriginReadableHeaders()` every one of them would be readable
+  by any page that asked for the resource — and a same-origin response is not
+  filtered at all, which is why that function is named for the cross-origin case
+  it is for.
+
+An HTTP error status **resolves** with `response.ok === false`; only a transport
+failure rejects. That distinction is how a page tells "the server said no" from
+"the request never happened".
+
+### The provider seam
+
+The bindings depend on `ScriptFetchProvider`, not on `ResourceLoader`. That is
+what lets the JavaScript-facing behaviour — settling order, header visibility, the
+body accessors — be tested against a fake that answers from a table, so a failing
+test names the behaviour rather than the network. A build with no provider still
+installs the globals, and calling `fetch` rejects saying so, because a page that
+feature-detects the function and then finds it broken is harder to explain than
+one that is told why.
+
 ## What is not supported
 
 Stated plainly, because a page that feature-detects these should take its own
@@ -256,12 +351,9 @@ fallback rather than silently doing the wrong thing:
 - **Modules.** `<script type="module">` is reported as skipped rather than run.
   Its imports would need a module loader and a fetch hook the engine does not
   have.
-- **`fetch` and `XMLHttpRequest`.** Network access from script is not exposed,
-  and both are **absent** rather than stubbed. That is deliberate: a stub would
-  make `typeof fetch === "function"` true, so a page would take its modern path,
-  call it, and break. Leaving them undefined lets feature detection pick the
-  fallback. Adding them means giving script a handle on the loader and a
-  promise-based completion path.
+- **`XMLHttpRequest`.** `fetch` is implemented; the older `XMLHttpRequest` is
+  not, and is absent rather than stubbed, so a page that feature-detects it takes
+  its `fetch` path.
 - **Web Storage.** `localStorage` and `sessionStorage` are present and empty,
   so a page reading back what it wrote gets nothing rather than an error.
 - **Navigation from script.** `location.href` reads correctly, but `reload`,

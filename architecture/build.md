@@ -78,22 +78,51 @@ tests are on, and the output directory.
 executable, links it, sets the console-executable properties, registers it with
 `add_test()`, and sets `QT_QPA_PLATFORM=offscreen`:
 
-| Function | Links | Notes |
+| Function | Links | Targets |
 | --- | --- | --- |
-| `oqb_add_unit_test` | `oqb_core`, `oqb_project_options`, `Qt6::Test` | Five targets: `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript`. |
-| `oqb_add_integration_test` | same | Five targets: `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting`; all get `TIMEOUT 120` for the network cases. |
-| `oqb_add_browser_test` | `oqb_ui`, `oqb_project_options`, `Qt6::Test`, `Qt6::Widgets` | Two targets: `tst_browser`, `tst_devtools`; both get `TIMEOUT 120`. |
+| `oqb_add_unit_test` | `oqb_core`, `oqb_project_options`, `Qt6::Test` | `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript`, `tst_cookies`, `tst_cache`, `tst_grid`, `tst_fetch` |
+| `oqb_add_integration_test` | same | `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting`, `tst_cookie_flow`, `tst_cache_flow`, `tst_fetch_flow`; all get `TIMEOUT 120` for the network cases |
+| `oqb_add_browser_test` | `oqb_ui`, `oqb_project_options`, `Qt6::Test`, `Qt6::Widgets` | `tst_browser`, `tst_devtools`; both get `TIMEOUT 120` |
 
-The integration suite registers four targets (`tst_http`, `tst_pipeline`,
-`tst_redirect`, `tst_perf`) plus `tst_scripting`, so a full `ctest` run reports
-twelve tests. `tst_redirect` drives real pages, including `http://github.com` and
-a large Wikipedia article, so it is the one suite that reaches the public
-network; its 120-second timeout exists for exactly that reason.
+Nineteen targets in total. `tst_redirect` drives real pages, including
+`http://github.com` and a large Wikipedia article, so it is the one suite that
+reaches the public network; its 120-second timeout exists for exactly that
+reason.
 
 All binaries land in `${CMAKE_BINARY_DIR}/bin` (`build/bin/`), which is why the
 commands in `testing.md` and the README use that path.
 
 ## Building
+
+The supported way is `scripts/build.sh`, which configures if needed, builds, and
+fixes up the macOS toolchain problem described below:
+
+```bash
+./scripts/build.sh              # configure + build
+./scripts/build.sh --test       # build, then ctest
+./scripts/build.sh --clean      # delete the build directory first
+./scripts/build.sh --debug      # Debug preset into build-debug/
+./scripts/build.sh -j 4         # limit parallel jobs
+OQB_BUILD_DIR=/tmp/oqb ./scripts/build.sh   # build somewhere else
+```
+
+`--clean` and `OQB_BUILD_DIR` are mutually exclusive with `--preset`, because
+CMake rejects `--preset` together with `-B`; the script falls back to an explicit
+`-S . -B <dir>` in that case.
+
+`scripts/run.sh` starts the browser and rebuilds first when any file under `src/`
+is newer than the binary. It sets `QT_QPA_PLATFORM=offscreen` for the report
+flags and clears it for a windowed run, so `--dump-dom` works over SSH and
+`run.sh https://bbc.com` opens a window without further setup. `OQB_GUI=1` starts
+the bundle through `open` so the window gets a Dock icon.
+
+`scripts/common.sh` is sourced by both and holds the shared parts: repository
+root resolution (it works through a symlink or from any directory), the build
+directory, Qt detection and the toolchain fix. The fix probes rather than
+assumes: it links a trivial program and only switches toolchains when the current
+environment demonstrably cannot link.
+
+The raw commands, which the scripts ultimately run:
 
 ```bash
 # Configure and build (Release, tests on), from the repository root.
@@ -108,9 +137,7 @@ cmake --build build -j
 cmake --preset debug && cmake --build build-debug -j
 ```
 
-Artifacts: `build/bin/openqbrowser`, plus `build/bin/tst_url`, `tst_html`,
-`tst_css`, `tst_layout`, `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf` and
-`tst_browser`.
+Artifacts: `build/bin/openqbrowser` and the nineteen `build/bin/tst_*` binaries.
 
 Changing a source file is not enough to build it — see the rule in
 `contributing.md`: a new `.cpp` must be listed in `src/CMakeLists.txt` (in
@@ -126,12 +153,10 @@ Changing a source file is not enough to build it — see the rule in
 
 Three things bite on macOS, and all three are visible in this environment.
 
-### 1. `DEVELOPER_DIR` and the CommandLineTools SDK
+### 1. The linker and the SDK must be the same generation
 
-`CMAKE_OSX_SYSROOT` in a working build cache points at
-`/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`. On a machine where the
-CommandLineTools SDK is newer than the linker that `/usr/bin/c++` drives, the link
-step fails with a wall of errors like
+This is the trap that costs the most time, because the error message points at the
+wrong thing. The link fails with a wall of errors like
 
 ```
 ld: multiple errors: tapi error: malformed file
@@ -140,31 +165,70 @@ ld: multiple errors: tapi error: malformed file
  in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libSystem.tbd'
 ```
 
-Each `.tbd` names architectures the `ld` in use does not know, so nothing links —
-not even CMake's own compiler check, which fails with
-`Check for working CXX compiler: /usr/bin/c++ - broken`. The Xcode toolchain is
-fine; the SDK is the problem. Point the build at Xcode's own SDK:
+It looks like a missing or corrupt library. It is not. The `.tbd` stubs in the
+SDK list the architectures that SDK supports, and this SDK lists
+`arm64e.x1-macos`. An `ld` older than the SDK does not know that architecture and
+aborts on the first stub it reads, so *nothing* links — including CMake's own
+compiler check, which reports the misleading
+`Check for working CXX compiler: /usr/bin/c++ - broken`.
+
+Which `ld` runs is decided by `DEVELOPER_DIR`, and on a default macOS install
+`xcode-select` points at Xcode.app, whose linker can be older than the Command
+Line Tools SDK:
+
+| `DEVELOPER_DIR` | Linker | SDK it is paired with |
+| --- | --- | --- |
+| `/Applications/Xcode.app/Contents/Developer` (default) | `ld-1230.1` | Xcode's SDK, e.g. `MacOSX26.2.sdk` |
+| `/Library/Developer/CommandLineTools` | `ld-27037.1` | `.../CommandLineTools/SDKs/MacOSX.sdk` |
+
+The default pairing is consistent, so a plain build normally works. It breaks when
+CMake resolves a *newer* SDK than the linker in use — which is what happens here,
+where the Command Line Tools SDK is a later release than Xcode's linker. To
+confirm the diagnosis, link a trivial program:
 
 ```bash
-cmake -S . -B build-xcode -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_OSX_SYSROOT="$(xcrun --sdk macosx --show-sdk-path)"
-cmake --build build-xcode -j
-ctest --test-dir build-xcode --output-on-failure
+echo 'int main(){}' > /tmp/probe.cpp && /usr/bin/c++ /tmp/probe.cpp -o /tmp/probe
 ```
 
-Two notes:
+There are two ways out, and both are verified on this machine.
 
-* Use `xcrun --sdk macosx --show-sdk-path`, **not** plain `xcrun --show-sdk-path`:
-  without `--sdk macosx` the plain form still reports
+**Option A — use the Command Line Tools toolchain**, which ships the matching
+linker:
+
+```bash
+export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+cmake --build build -j
+```
+
+**Option B — pin the sysroot to Xcode's SDK**, so the older linker is paired with
+the SDK it was built for:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_OSX_SYSROOT="$(xcrun --sdk macosx --show-sdk-path)" \
+      -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+cmake --build build -j
+```
+
+Two notes that matter:
+
+* Use `xcrun --sdk macosx --show-sdk-path`, **not** plain
+  `xcrun --show-sdk-path`. The plain form reports
   `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`, which is the SDK that
-  fails. With `--sdk macosx` it reports Xcode's, e.g.
-  `/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.2.sdk`.
-* `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` alone does not fix it,
-  because CMake still records the CommandLineTools SDK as `CMAKE_OSX_SYSROOT`; the
-  explicit `-DCMAKE_OSX_SYSROOT=…` is what changes the compile and link flags.
+  fails; `--sdk macosx` reports Xcode's.
+* `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` is already the
+  default and so fixes nothing by itself. The useful values are a *different*
+  `DEVELOPER_DIR` (Option A) or an explicit `-DCMAKE_OSX_SYSROOT=…` (Option B).
 
-Once configured, `cmake --build build-xcode -j && ctest --test-dir build-xcode`
-runs the suites. `tst_redirect` includes cases that drive a large generated page
+`scripts/common.sh` applies Option A automatically, but only after probing: it
+links a trivial program with the current environment, and only if that fails does
+it retry with `DEVELOPER_DIR` set to the Command Line Tools. An environment that
+already works is left untouched, and if the fallback also fails you get a warning
+rather than a cryptic linker dump.
+
+Once configured, `cmake --build build -j && ctest --test-dir build` runs the
+suites. `tst_redirect` includes cases that drive a large generated page
 (`http://github.com`, a large Wikipedia article), so it is the one suite that
 reaches the public network; everything else is hermetic.
 

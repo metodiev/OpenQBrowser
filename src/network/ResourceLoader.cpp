@@ -1,5 +1,6 @@
 #include "network/ResourceLoader.h"
 
+#include "network/FetchPolicy.h"
 #include "security/SecurityPolicy.h"
 #include "storage/Cookies.h"
 
@@ -38,7 +39,7 @@ QString Resource::text() const
 }
 
 ResourceLoader::ResourceLoader(QObject *parent)
-    : QObject(parent)
+    : ScriptFetchProvider(parent)
 {
 }
 
@@ -225,6 +226,17 @@ void ResourceLoader::cancelAll()
 {
     const auto clients = m_clients;
     m_clients.clear();
+
+    // A script request that was cancelled must still settle: a promise that never
+    // resolves is worse than one that fails, because the page waits for it
+    // forever. Its own map is emptied into failures before the abort.
+    const auto scriptClients = m_scriptClients;
+    m_scriptClients.clear();
+    for (auto it = scriptClients.constBegin(); it != scriptClients.constEnd(); ++it) {
+        failScriptRequest(it.value(), tr("The request was cancelled"));
+    }
+
+    m_scriptQueue.clear();
     m_queue.clear();
     for (HttpClient *client : clients.keys())
         client->abort();
@@ -268,6 +280,14 @@ void ResourceLoader::pump()
 {
     while (!m_queue.isEmpty() && m_clients.size() < m_maxConcurrent)
         startRequest(m_queue.takeFirst());
+
+    // Script requests wait in their own queue and share the same concurrency
+    // budget, so a page that issues a hundred fetches cannot starve the images
+    // and stylesheets the page itself needs.
+    while (!m_scriptQueue.isEmpty() && m_clients.size() < m_maxConcurrent) {
+        const auto entry = m_scriptQueue.takeFirst();
+        startScriptRequest(entry.first, entry.second);
+    }
 }
 
 void ResourceLoader::applyCookies(HttpRequest *request, const Url &referrer) const
@@ -307,20 +327,24 @@ void ResourceLoader::absorbCookies(const HttpResponse &response, const Url &url)
     m_cookies->storeFromHeaders(response.headers, source);
 }
 
-void ResourceLoader::startRequest(const PendingRequest &request)
+/// Wires a client's completion back to the loader, whoever asked for the request.
+///
+/// Shared by both request paths on purpose. The script path used to build its own
+/// client and connect nothing, so its responses arrived and were dropped: the page
+/// waited on a promise that could never settle, and the dump never finished.
+void ResourceLoader::connectClient(HttpClient *client)
 {
-    // Another request for the same URL may have completed while this one waited
-    // in the queue, so the cache is consulted again here rather than only in
-    // fetch(): a page that references one stylesheet ten times makes one request.
-    if (tryCache(request))
-        return;
-
-    ++m_requestCount;
-
-    auto *client = new HttpClient(this);
-    m_clients.insert(client, request.url);
-
     connect(client, &HttpClient::finished, this, [this, client](const HttpResponse &response) {
+        // Script requests share this client plumbing but are reported on their
+        // own signal, so the check comes first: a page's handler must never see
+        // a fetch() response.
+        if (const ScriptMeta meta = m_scriptClients.take(client); meta.requestId != 0) {
+            client->deleteLater();
+            handleScriptResponse(meta, response);
+            pump();
+            return;
+        }
+
         const Url url = m_clients.value(client);
         m_clients.remove(client);
         client->deleteLater();
@@ -329,6 +353,13 @@ void ResourceLoader::startRequest(const PendingRequest &request)
     });
 
     connect(client, &HttpClient::failed, this, [this, client](const QString &error) {
+        if (const ScriptMeta meta = m_scriptClients.take(client); meta.requestId != 0) {
+            client->deleteLater();
+            failScriptRequest(meta, error);
+            pump();
+            return;
+        }
+
         const Url url = m_clients.value(client);
         m_clients.remove(client);
         client->deleteLater();
@@ -341,8 +372,28 @@ void ResourceLoader::startRequest(const PendingRequest &request)
     // redirects to the dashboard sets the session on the hop that is discarded.
     connect(client, &HttpClient::redirectResponse, this,
             [this, client](const HttpResponse &response) {
+                if (const ScriptMeta meta = m_scriptClients.value(client); meta.requestId != 0) {
+                    absorbCookies(response, meta.url);
+                    emit fetchRedirected(meta.requestId, redirectResponse(meta, response));
+                    return;
+                }
                 absorbCookies(response, m_clients.value(client));
             });
+}
+
+void ResourceLoader::startRequest(const PendingRequest &request)
+{
+    // Another request for the same URL may have completed while this one waited
+    // in the queue, so the cache is consulted again here rather than only in
+    // fetch(): a page that references one stylesheet ten times makes one request.
+    if (tryCache(request))
+        return;
+
+    ++m_requestCount;
+
+    auto *client = new HttpClient(this);
+    m_clients.insert(client, request.url);
+    connectClient(client);
 
     // Each hop asks the jar afresh which cookies belong on the request, because
     // the hop that just completed may have changed the answer. The referrer is
@@ -399,7 +450,15 @@ void ResourceLoader::handleHttpResponse(const Url &url, const HttpResponse &resp
     resource.requestedUrl = url;
     resource.url = response.finalUrl.isValid() ? response.finalUrl : url;
     resource.statusCode = response.statusCode;
+    resource.statusText = response.statusText();
     resource.mimeType = response.contentType();
+    resource.headers = response.headers;
+
+    // A response that carried its own reason phrase keeps it; one that did not
+    // gets the standard text for its code, so `response.statusText` is never
+    // empty for a status a browser would name.
+    if (resource.statusText.isEmpty())
+        resource.statusText = FetchPolicy::statusTextFor(response.statusCode);
 
     if (response.isError()) {
         resource.error = tr("HTTP %1").arg(response.statusText());
@@ -497,6 +556,305 @@ void ResourceLoader::handleFailure(const Url &url, const QString &error)
     emit finished(resource);
 }
 
+// ------------------------------------------------------ requests from script
+
+namespace {
+
+/// Maps fetch()'s `credentials` names onto the enum the loader works with.
+bool credentialsInclude(const QString &mode)
+{
+    return mode.compare(QLatin1String("include"), Qt::CaseInsensitive) == 0;
+}
+
+bool credentialsOmit(const QString &mode)
+{
+    return mode.compare(QLatin1String("omit"), Qt::CaseInsensitive) == 0;
+}
+
+} // namespace
+
+int ResourceLoader::startScriptFetch(const ScriptRequest &request)
+{
+    m_scriptRefusal.clear();
+
+    const Url url = Url::parse(request.url);
+    if (!url.isValid()) {
+        m_scriptRefusal = tr("the URL is not valid");
+        return 0;
+    }
+
+    if (!FetchPolicy::isAllowedMethod(request.method)) {
+        m_scriptRefusal = tr("%1 is not a method a page may use").arg(request.method);
+        return 0;
+    }
+
+    const Url documentUrl = request.documentUrl.isEmpty() ? Url() : Url::parse(request.documentUrl);
+
+    // The policy is consulted before a request is built, so a secure page cannot
+    // be made to pull a plaintext resource in and a host the user reached over
+    // HTTPS is not silently downgraded. This is the check the page's own
+    // subresources already go through; script was the one way around it.
+    const security::SecurityPolicy policy;
+    if (const security::Decision decision = policy.canLoadSubresource(documentUrl, url);
+        !decision.allowed) {
+        m_scriptRefusal = decision.reason;
+        return 0;
+    }
+
+    ScriptMeta meta;
+    meta.requestId = m_nextScriptRequestId++;
+    meta.url = url;
+    meta.requestOrigin = documentUrl.serialisedOrigin();
+    meta.sameOrigin = security::SecurityPolicy::sameOrigin(documentUrl, url);
+    meta.withCredentials = credentialsInclude(request.credentials);
+    meta.noCredentials = credentialsOmit(request.credentials);
+    meta.length = static_cast<int>(request.body.size());
+
+    ScriptRequest resolved = request;
+    resolved.url = url.toString();
+    resolved.documentUrl = documentUrl.toString();
+
+    // A local file is read without a socket, so it completes here rather than
+    // through the queue. It is still reported asynchronously, because a promise
+    // that settled inside the call that created it would run its handler before
+    // the page could attach one.
+    if (url.isLocalFile()) {
+        const Resource file = loadLocalFile(url);
+        QMetaObject::invokeMethod(
+            this,
+            [this, meta, file] {
+                emit fetchFinished(meta.requestId, scriptResponseFromResource(file, meta));
+            },
+            Qt::QueuedConnection);
+        return meta.requestId;
+    }
+
+    if (!url.isRemote()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, meta] {
+                ScriptFetchResponse response;
+                response.url = meta.url.toString();
+                response.error = tr("OpenQBrowser cannot load %1 resources").arg(meta.url.scheme());
+                emit fetchFinished(meta.requestId, response);
+            },
+            Qt::QueuedConnection);
+        return meta.requestId;
+    }
+
+    ++m_requestCount;
+    m_scriptQueue.append({meta, resolved});
+    pump();
+    return meta.requestId;
+}
+
+void ResourceLoader::abortScriptFetch(int requestId)
+{
+    // A queued request is dropped outright; one that is already in flight has its
+    // client closed. Either way the id is forgotten, so nothing is reported for
+    // it afterwards, which is what `AbortController` relies on.
+    for (int i = 0; i < m_scriptQueue.size(); ++i) {
+        if (m_scriptQueue.at(i).first.requestId == requestId) {
+            m_scriptQueue.removeAt(i);
+            return;
+        }
+    }
+
+    for (auto it = m_scriptClients.begin(); it != m_scriptClients.end(); ++it) {
+        if (it.value().requestId != requestId)
+            continue;
+
+        HttpClient *client = it.key();
+        m_scriptClients.erase(it);
+        m_clients.remove(client);
+        client->abort();
+        client->deleteLater();
+        return;
+    }
+}
+
+ScriptFetchResponse ResourceLoader::scriptResponseFromResource(const Resource &resource,
+                                                               const ScriptMeta &meta)
+{
+    ScriptFetchResponse response;
+    response.status = resource.statusCode;
+    response.statusText = resource.statusText;
+    response.body = resource.data;
+    response.url = resource.url.isValid() ? resource.url.toString() : meta.url.toString();
+    response.error = resource.error;
+
+    for (const HeaderList::Entry &entry : resource.headers.entries())
+        response.headers.append({entry.first, entry.second});
+
+    return response;
+}
+
+void ResourceLoader::startScriptRequest(const ScriptMeta &meta, const ScriptRequest &request)
+{
+    const Url url = Url::parse(request.url);
+    const Url documentUrl
+        = request.documentUrl.isEmpty() ? Url() : Url::parse(request.documentUrl);
+
+    // A GET that the cache can answer is answered from it: a page polling an
+    // endpoint should not cost a request every time. Only a GET is served this
+    // way, because a POST is not idempotent and a cached one would report a write
+    // that never happened.
+    const bool cacheable = request.method.compare(QLatin1String("GET"), Qt::CaseInsensitive) == 0;
+    if (cacheable) {
+        const auto it = m_cache.constFind(url.toString());
+        if (it != m_cache.constEnd() && reusable(it.value(), QDateTime::currentDateTimeUtc())) {
+            ++m_cacheHits;
+            Resource stored = it.value().resource;
+
+            // The entry may have been stored by a page request, so it carries
+            // whatever headers that had. The CORS decision is still applied: the
+            // same body can be perfectly readable by the page and unreadable by
+            // script on another origin.
+            if (!meta.sameOrigin) {
+                const FetchPolicy::CorsHeaders cors
+                    = FetchPolicy::CorsHeaders::fromHeaders(stored.headers);
+                const FetchPolicy::CorsResult decision
+                    = FetchPolicy::checkReadable(cors, meta.requestOrigin, meta.withCredentials);
+                if (!decision.readable) {
+                    stored.data.clear();
+                    stored.error = tr("Cross-origin response blocked: %1").arg(decision.reason);
+                } else {
+                    stored.headers = FetchPolicy::crossOriginReadableHeaders(
+                        stored.headers, cors.allowOrigin, cors.exposeHeaders,
+                        meta.withCredentials);
+                }
+            }
+
+            emit fetchFinished(meta.requestId, scriptResponseFromResource(stored, meta));
+            return;
+        }
+    }
+
+    auto *client = new HttpClient(this);
+    m_scriptClients.insert(client, meta);
+    // The client map is shared with the page path, which is what lets the one
+    // completion lambda tell the two kinds apart and keeps the concurrency cap
+    // covering both.
+    m_clients.insert(client, url);
+    connectClient(client);
+
+    HttpRequest httpRequest;
+    httpRequest.url = url;
+    httpRequest.userAgent = m_userAgent;
+    httpRequest.timeoutMs = m_requestTimeoutMs;
+    httpRequest.body = request.body;
+
+    for (const auto &header : request.headers)
+        httpRequest.headers.append(header.first, header.second);
+
+    if (request.method.compare(QLatin1String("GET"), Qt::CaseInsensitive) == 0)
+        httpRequest.method = HttpRequest::Method::Get;
+    else if (request.method.compare(QLatin1String("HEAD"), Qt::CaseInsensitive) == 0)
+        httpRequest.method = HttpRequest::Method::Head;
+    else
+        httpRequest.method = HttpRequest::Method::Post;
+
+    // The browser's own headers are set after the page's, so a page cannot
+    // override them. FetchPolicy refuses the names a page may not set at all; this
+    // is what makes that refusal hold for the ones a page may set to another
+    // value.
+    if (!httpRequest.body.isEmpty()
+        && !httpRequest.headers.contains(QStringLiteral("Content-Type"))) {
+        httpRequest.headers.set(QStringLiteral("Content-Type"),
+                                QStringLiteral("text/plain;charset=UTF-8"));
+    }
+    if (url.isRemote())
+        httpRequest.headers.set(QStringLiteral("Origin"), meta.requestOrigin);
+    if (documentUrl.isValid())
+        httpRequest.headers.set(QStringLiteral("Referer"), documentUrl.toString());
+
+    if (!meta.noCredentials) {
+        // The jar is consulted per hop, so a redirect that sets a cookie has it
+        // sent on the hop that follows, exactly as the page path does.
+        client->setCookieProvider([this, documentUrl](const Url &hop) {
+            HttpRequest probe;
+            probe.url = hop;
+            applyCookies(&probe, documentUrl);
+            return probe.headers.joined(QStringLiteral("Cookie"));
+        });
+        applyCookies(&httpRequest, documentUrl);
+    } else {
+        // A request that asked for no credentials must not have the ones a
+        // redirect machinery would otherwise add back on a later hop.
+        client->setCookieProvider([](const Url &) { return QString(); });
+    }
+
+    QMetaObject::invokeMethod(
+        client, [client, httpRequest] { client->send(httpRequest); }, Qt::QueuedConnection);
+}
+
+void ResourceLoader::handleScriptResponse(const ScriptMeta &meta, const HttpResponse &response)
+{
+    absorbCookies(response, meta.url);
+
+    Resource resource;
+    resource.requestedUrl = meta.url;
+    resource.url = response.finalUrl.isValid() ? response.finalUrl : meta.url;
+    resource.statusCode = response.statusCode;
+    resource.statusText = response.statusText();
+    if (resource.statusText.isEmpty())
+        resource.statusText = FetchPolicy::statusTextFor(response.statusCode);
+    resource.headers = response.headers;
+    resource.mimeType = response.contentType();
+    resource.data = response.body;
+
+    // The CORS decision is made on the response the page actually receives, not
+    // on the first hop: after a redirect it is the final answer that has to grant
+    // access.
+    if (!meta.sameOrigin) {
+        const FetchPolicy::CorsHeaders cors = FetchPolicy::CorsHeaders::fromHeaders(response.headers);
+        const FetchPolicy::CorsResult decision
+            = FetchPolicy::checkReadable(cors, meta.requestOrigin, meta.withCredentials);
+        if (!decision.readable) {
+            // The body is dropped rather than reported with a flag saying not to
+            // read it. A check a page could ignore would be no protection at all,
+            // so the bytes never reach script.
+            resource.data.clear();
+            resource.error = tr("Cross-origin response blocked: %1").arg(decision.reason);
+        } else {
+            // A response's headers describe more than its content - a request id,
+            // an internal host name - so a cross-origin response exposes only the
+            // ones it was willing to name. Filtering here rather than in the
+            // bindings keeps the decision with the rest of the CORS rules.
+            resource.headers = FetchPolicy::crossOriginReadableHeaders(
+                response.headers, cors.allowOrigin, cors.exposeHeaders, meta.withCredentials);
+        }
+    }
+
+    emit fetchFinished(meta.requestId, scriptResponseFromResource(resource, meta));
+}
+
+void ResourceLoader::failScriptRequest(const ScriptMeta &meta, const QString &error)
+{
+    ScriptFetchResponse response;
+    response.url = meta.url.toString();
+    response.error = error;
+    emit fetchFinished(meta.requestId, response);
+}
+
+ScriptFetchResponse ResourceLoader::redirectResponse(const ScriptMeta &meta,
+                                                    const HttpResponse &response) const
+{
+    Resource resource;
+    resource.requestedUrl = meta.url;
+    resource.url = response.finalUrl.isValid() ? response.finalUrl : meta.url;
+    resource.statusCode = response.statusCode;
+    resource.statusText = response.statusText();
+    if (resource.statusText.isEmpty())
+        resource.statusText = FetchPolicy::statusTextFor(response.statusCode);
+    resource.headers = response.headers;
+    resource.mimeType = response.contentType();
+
+    ScriptFetchResponse out = scriptResponseFromResource(resource, meta);
+    out.redirected = true;
+    return out;
+}
+
 Resource ResourceLoader::loadLocalFile(const Url &url)
 {
     Resource resource;
@@ -521,11 +879,19 @@ Resource ResourceLoader::loadLocalFile(const Url &url)
 
     resource.data = file.readAll();
     resource.statusCode = 200;
+    resource.statusText = FetchPolicy::statusTextFor(200);
 
     QMimeDatabase database;
     resource.mimeType = database.mimeTypeForFile(info).name();
     if (resource.mimeType.isEmpty())
         resource.mimeType = QStringLiteral("application/octet-stream");
+
+    // A file has no headers of its own, so the ones a server would have sent are
+    // supplied. Without them a fetch() of a local file would see an empty Headers
+    // object and a page branching on Content-Type would take the wrong path.
+    resource.headers.set(QStringLiteral("Content-Type"), resource.mimeType);
+    resource.headers.set(QStringLiteral("Content-Length"),
+                         QString::number(resource.data.size()));
 
     return resource;
 }

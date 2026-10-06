@@ -27,6 +27,8 @@ private slots:
     void parsesPercentages();
     void parsesFitContent();
     void parsesMinmaxWithFlexibleMaximum();
+    void treatsABareFlexAsMinmaxAuto();
+    void honoursAnExplicitMinContentFloor();
     void parsesMinmaxWithFixedRange();
     void parsesRepeat();
     void parsesRepeatedTracksAndNames();
@@ -40,6 +42,8 @@ private slots:
     void parsesSpan();
     void parsesNamedPlacement();
     void parsesAutoPlacement();
+    void parsesAutoFillRepeat();
+    void keepsAutoFitRepeatAsARecipe();
     void expandsGridAreaShorthand();
 
     // Sizing.
@@ -134,11 +138,47 @@ void GridTest::parsesMinmaxWithFlexibleMaximum()
     QCOMPARE(entries.size(), 2);
     QCOMPARE(entries.at(0).track.kind, GridTrack::Kind::Fraction);
     QCOMPARE(entries.at(0).track.value, 1.0);
-    // A zero minimum is a real floor, not the content minimum sentinel.
-    QCOMPARE(entries.at(0).track.contentMin, 0.0);
+    // A zero minimum is a real floor, not a content-based one: it is what lets
+    // the column shrink below its content.
+    QCOMPARE(entries.at(0).track.minKind, GridTrack::MinKind::Zero);
+    QCOMPARE(entries.at(0).track.floorPixels, 0.0);
 
     QCOMPARE(entries.at(1).track.kind, GridTrack::Kind::Fraction);
-    QCOMPARE(entries.at(1).track.contentMin, 200.0);
+    QCOMPARE(entries.at(1).track.minKind, GridTrack::MinKind::Fixed);
+    QCOMPARE(entries.at(1).track.floorPixels, 200.0);
+}
+
+void GridTest::treatsABareFlexAsMinmaxAuto()
+{
+    GridTrackList list;
+    // A bare `<flex>` implies `minmax(auto, <flex>)` (CSS Grid 7.2.4), so these
+    // two declarations must produce the same track. They used to differ: the
+    // bare form left the floor at zero while `minmax(auto, 1fr)` resolved its
+    // minimum from the content, which made a `repeat(24, ...)` grid explode.
+    const auto bare = css::parseTrackList(QStringLiteral("1fr"), 16, 16, 800, &list);
+    GridTrackList other;
+    const auto explicitForm
+        = css::parseTrackList(QStringLiteral("minmax(auto, 1fr)"), 16, 16, 800, &other);
+
+    QCOMPARE(bare.size(), 1);
+    QCOMPARE(explicitForm.size(), 1);
+    QCOMPARE(bare.at(0).track.kind, explicitForm.at(0).track.kind);
+    QCOMPARE(bare.at(0).track.minKind, explicitForm.at(0).track.minKind);
+    QCOMPARE(bare.at(0).track.minKind, GridTrack::MinKind::Auto);
+    QCOMPARE(bare.at(0).track.value, explicitForm.at(0).track.value);
+}
+
+void GridTest::honoursAnExplicitMinContentFloor()
+{
+    GridTrackList list;
+    // `min-content` and `max-content` are the author's own minimums, so they are
+    // recorded as their own kinds rather than folded into `auto`.
+    const auto entries = css::parseTrackList(
+        QStringLiteral("minmax(min-content, 1fr) minmax(max-content, 1fr)"), 16, 16, 800, &list);
+
+    QCOMPARE(entries.size(), 2);
+    QCOMPARE(entries.at(0).track.minKind, GridTrack::MinKind::MinContent);
+    QCOMPARE(entries.at(1).track.minKind, GridTrack::MinKind::MaxContent);
 }
 
 void GridTest::parsesMinmaxWithFixedRange()
@@ -290,6 +330,62 @@ void GridTest::expandsGridAreaShorthand()
 }
 
 // ------------------------------------------------------------------- sizing
+
+void GridTest::parsesAutoFillRepeat()
+{
+    // `repeat(auto-fill, ...)` cannot be expanded while parsing: how many
+    // repetitions fit depends on the width the grid is finally given. It is kept
+    // as a recipe and expanded per layout.
+    GridTrackList list;
+    parseTrackList(QStringLiteral("repeat(auto-fill, minmax(250px, 1fr))"), 16, 16, 1024, &list);
+
+    QVERIFY2(list.autoRepeat.has_value(), "auto-fill must be kept as a recipe");
+    QVERIFY(!list.autoRepeat->fit);
+    QCOMPARE(list.autoRepeat->tracks.size(), 1);
+
+    // 1024px of room fits four 250px columns.
+    const QVector<css::GridTrackEntry> expanded = list.expand(1024, 16, 16);
+    QCOMPARE(expanded.size(), 4);
+
+    // 700px fits two.
+    QCOMPARE(list.expand(700, 16, 16).size(), 2);
+
+    // A width smaller than one repetition still produces one column, because a
+    // grid that expands to nothing would drop its content entirely.
+    QCOMPARE(list.expand(100, 16, 16).size(), 1);
+
+    // The gap counts against the space, so eight 100px columns cannot fit in
+    // 1024px of space: 1024 / 110 floors to nine, minus the trailing gap.
+    GridTrackList gapped;
+    parseTrackList(QStringLiteral("repeat(auto-fill, 100px)"), 16, 16, 1024, &gapped);
+    gapped.gap = 10;
+    QCOMPARE(gapped.expand(1024, 16, 16).size(), 9);
+}
+
+void GridTest::keepsAutoFitRepeatAsARecipe()
+{
+    // `auto-fit` collapses the repetitions nothing landed in, which is what lets
+    // a handful of cards stretch across the row rather than huddling at the
+    // start. The count cannot exceed the number of items.
+    GridTrackList list;
+    parseTrackList(QStringLiteral("repeat(auto-fit, minmax(200px, 1fr))"), 16, 16, 1000, &list);
+
+    QVERIFY(list.autoRepeat.has_value());
+    QVERIFY(list.autoRepeat->fit);
+
+    // Five repetitions fit in 1000px, but with two items only two are kept.
+    QCOMPARE(list.expand(1000, 16, 16).size(), 5);
+
+    list.autoPlacementItemCount = 2;
+    QCOMPARE(list.expand(1000, 16, 16).size(), 2);
+
+    // A repetition that cannot be expanded by count alone - it has no definite
+    // minimum - yields exactly one track rather than looping forever.
+    GridTrackList open;
+    parseTrackList(QStringLiteral("repeat(auto-fill, 1fr)"), 16, 16, 1024, &open);
+    QVERIFY(open.autoRepeat.has_value());
+    QCOMPARE(open.expand(1024, 16, 16).size(), 1);
+}
 
 void GridTest::sizesFixedTracks()
 {

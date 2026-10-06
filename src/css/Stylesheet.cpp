@@ -6,6 +6,7 @@
 #include <QSet>
 
 #include <cmath>
+#include <algorithm>
 
 namespace oqb::css {
 namespace {
@@ -389,7 +390,15 @@ MediaQueryTerm parseMediaTerm(const QString &text)
 
     const int paren = remaining.indexOf(u'(');
     if (paren != 0 && paren > 0) {
-        term.type = remaining.left(paren).trimmed();
+        // "screen and (max-width: 100px)" carries its type before the "and" that
+        // joins it to the first condition. Keeping the keyword in the type makes
+        // it compare unequal to "screen", and the whole query then never matches:
+        // a stylesheet written entirely with `@media screen and (...)` - which is
+        // how most real sites are written - would contribute no rules at all.
+        QString typeText = remaining.left(paren).trimmed();
+        if (typeText.endsWith(QLatin1String("and")))
+            typeText = typeText.left(typeText.size() - 3).trimmed();
+        term.type = typeText;
         remaining = remaining.mid(paren);
     } else if (paren < 0) {
         // No features at all: the whole text was the media type.
@@ -467,6 +476,15 @@ QList<StyleRule> Stylesheet::rulesForMedia(const QString &mediaType, double view
                 out.append(rule);
         }
     }
+
+    // A conditional rule is not *later* than an unconditional one; it sits where
+    // it was written. The two loops above walk separate lists, so their results
+    // are concatenated and the source order has to be restored here. Without
+    // this, every `@media` rule outranks every plain rule, and the narrowest
+    // breakpoint in a stylesheet wins at every viewport width - which is what
+    // stacked a real news page into one column instead of a responsive grid.
+    std::stable_sort(out.begin(), out.end(),
+                     [](const StyleRule &a, const StyleRule &b) { return a.order < b.order; });
 
     Q_UNUSED(mediaType);
     return out;
