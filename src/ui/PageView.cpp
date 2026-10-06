@@ -11,6 +11,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QScrollBar>
+#include <QTimer>
 #include <QWheelEvent>
 
 namespace oqb::ui {
@@ -53,9 +54,52 @@ PageView::PageView(QWidget *parent)
     // The widget fills its area with the page background, so no palette colour
     // shows through during a resize.
     setAutoFillBackground(false);
+
+    // The frame clock. It runs at roughly 60Hz while the page has work pending
+    // and is stopped otherwise, so a page with no timers does not wake the CPU
+    // at all. This is what makes setTimeout and requestAnimationFrame run in the
+    // window rather than only in a headless caller.
+    m_frameTimer = new QTimer(this);
+    m_frameTimer->setTimerType(Qt::PreciseTimer);
+    connect(m_frameTimer, &QTimer::timeout, this, &PageView::serviceFrame);
+    m_frameClock.start();
 }
 
 PageView::~PageView() = default;
+
+void PageView::serviceFrame()
+{
+    if (!m_tab || !m_tab->page()) {
+        m_frameTimer->stop();
+        return;
+    }
+
+    browser::Page *page = m_tab->page();
+
+    // The page's timers are measured from the page's own start, so the clock is
+    // restarted whenever a new document begins.
+    page->serviceScripts(m_frameClock.elapsed());
+
+    if (!page->hasPendingScriptWork()) {
+        // Nothing left to run, so the clock is stopped until something schedules
+        // work again. A repaint already happened if the page changed.
+        m_frameTimer->stop();
+        return;
+    }
+
+    refresh();
+}
+
+void PageView::ensureFrameClock()
+{
+    if (!m_frameTimer || m_frameTimer->isActive())
+        return;
+    if (!m_tab || !m_tab->page() || !m_tab->page()->hasPendingScriptWork())
+        return;
+
+    m_frameClock.restart();
+    m_frameTimer->start(16);
+}
 
 void PageView::setTab(browser::Tab *tab)
 {
@@ -74,7 +118,10 @@ void PageView::setTab(browser::Tab *tab)
             // A new document starts at the top, as every browser does.
             m_scroll = QPoint(0, 0);
             refresh();
+            // The document is complete, so any timer it scheduled can now run.
+            ensureFrameClock();
         });
+        connect(m_tab, &browser::Tab::stateChanged, this, [this] { ensureFrameClock(); });
     }
 
     refresh();

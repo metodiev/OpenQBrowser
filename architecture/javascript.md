@@ -1,162 +1,305 @@
 # JavaScript
 
-**JavaScript is not implemented.** OpenQBrowser parses, styles, lays out and
-paints documents, and it does not execute a single line of page script. This
-document states what the code does instead, what an engine would have to satisfy,
-and why the seam exists before the engine does.
+OpenQBrowser runs page script. A page's `<script>` elements are fetched, ordered
+and executed against the real DOM, and the changes they make are re-styled,
+re-laid out and painted. The engine is [QuickJS](https://github.com/quickjs-ng/quickjs),
+a small embeddable ES2023 implementation, chosen because it is a real engine
+with a small C API, an MIT licence, and no dependency the browser would not
+already have.
 
-## The seam
+This document describes how the engine is embedded, how the DOM is bound into
+it, and what is deliberately not supported.
 
-`src/javascript/ScriptEngine.h` and `ScriptEngine.cpp` (about 140 lines) are the
-entire JavaScript module.
+## Why an embedded engine
 
-```cpp
-class ScriptEngine
-{
-public:
-    virtual bool isAvailable() const { return false; }        // always false
-    virtual ExecutionResult execute(const QString &source, dom::Document *document,
-                                    const QString &sourceName = {});
-    const QList<ConsoleMessage> &messages() const;
-    void clearMessages();
-    QStringList skippedScripts() const;
-    void noteSkippedScript(const QString &description);
-    static QString availabilityNote();
-    bool scriptsBlockRendering() const { return !isAvailable(); }   // always true
-protected:
-    QList<ConsoleMessage> m_messages;
-    QStringList m_skipped;
-};
+Writing a JavaScript engine is a project of its own, and a browser whose script
+support is half-working is worse than one that says so. Embedding an existing
+engine means the language is correct by construction, and the work that remains
+is the part specific to this browser: binding the DOM, and getting the *timing*
+right, which is where a browser's observable behaviour actually lives.
+
+The engine is fetched and built by CMake, so a checkout needs no manual setup:
+
+```cmake
+option(OPENQBROWSER_SCRIPTING "Run page JavaScript with the embedded QuickJS engine" ON)
+set(OPENQBROWSER_QUICKJS_TAG "v0.9.0" CACHE STRING "The quickjs-ng release to build against")
+
+FetchContent_Declare(quickjs
+    GIT_REPOSITORY https://github.com/quickjs-ng/quickjs.git
+    GIT_TAG ${OPENQBROWSER_QUICKJS_TAG})
+FetchContent_MakeAvailable(quickjs)
 ```
 
-Supporting types: `ConsoleMessage` (`Level`: `Log`, `Info`, `Warning`, `Error`;
-plus `text`, `source`, `line`) and `ExecutionResult` (`success`, `error`, `line`,
-`messages`).
+Setting `-DOPENQBROWSER_SCRIPTING=OFF` builds the browser without it. Every
+JavaScript source file is guarded by that macro, so the browser still compiles,
+still renders, and reports honestly that scripts do not run.
 
-The interface takes a `dom::Document *` and a source string and returns messages,
-which is the smallest contract that a real engine could satisfy. It is
-deliberately virtual with a trivial default, so replacing it means adding one
-subclass and one construction site in `Page`.
+## Files
 
-## What happens today
+| File | Lines | What it does |
+| --- | ---: | --- |
+| `ScriptEngine.h/.cpp` | 200 | The seam the browser uses, and the fallback when there is no engine |
+| `Engine.h/.cpp` | 520 | Runtime lifecycle, evaluation, exception formatting, promise jobs |
+| `Bindings.h/.cpp` | 545 | Wrapper cache, detached-node graveyard, prototypes, installation |
+| `DomBindings.cpp` | 1290 | Node, Element and Document members |
+| `ElementObjects.cpp` | 675 | `classList`, `style`, reflected attributes |
+| `Events.h/.cpp` | 800 | Listener registry, the dispatch walk, event objects |
+| `EventsMembers.cpp` | 190 | `Event`, `CustomEvent`, `MouseEvent`, `KeyboardEvent` constructors |
+| `Globals.cpp` | 330 | `setTimeout` and friends, `console` |
+| `WindowBindings.cpp` | 310 | `navigator`, `location`, `screen`, `alert`, the API stubs |
+| `TimerQueue.h/.cpp` | 390 | Timer scheduling, delay clamping, the frame clock |
 
-`Page::buildDocument()` (in `src/browser/Page.cpp`) walks the parsed document:
+## One runtime per page
+
+`Engine` owns a `JSRuntime` and a `JSContext`. One runtime per page isolates
+pages from each other: a page that exhausts its heap or corrupts its own globals
+cannot reach another tab. It also makes disposal a single clear operation when a
+tab closes.
+
+A page is untrusted code, so the runtime is given limits before anything runs:
 
 ```cpp
-for (dom::Element *element : m_document->getElementsByTagName("script")) {
-    const QString src = element->attribute("src");
-    if (!src.isEmpty())
-        m_scripts->execute(QString(), m_document.get(),
-                           m_document->resolveUrl(src).toString());
-    else
-        m_scripts->execute(element->textContent(), m_document.get(), "inline");
-}
+JS_SetMemoryLimit(runtime, 256 * 1024 * 1024);
+JS_SetMaxStackSize(runtime, 2 * 1024 * 1024);
 ```
 
-`ScriptEngine::execute()` then does this, in order:
+Both matter: without the stack limit, deeply recursive page script takes the
+whole browser down with a native stack overflow that no `try`/`catch` can stop.
 
-1. If `isAvailable()` were true, it returns a failure explaining that the engine
-   claimed to be usable without implementing execution. That branch exists so a
-   subclass that forgets to override `execute()` cannot silently appear to work.
-2. It counts the source lines and appends an **Info** console message:
-   `Script not executed: OpenQBrowser has no JavaScript engine yet (N lines from
-   <source>).`
-3. It appends a **Warning**: `The page may not work as intended without scripting.
-   See architecture/javascript.md for the plan.`
-4. It records the script in `skippedScripts()` — `"inline script"` or the resolved
-   URL.
-5. It returns `success == true` with no error.
+`evaluate()` compiles with `JS_EVAL_TYPE_GLOBAL`, which is what a `<script>`
+element contains, and returns the script's **completion value** alongside its
+messages. Draining `JS_IsJobPending` afterwards is what makes `await` and
+`.then()` work for code that a synchronous evaluation started.
 
-The net effect on a page:
+## Binding the DOM
 
-* Scripts are **noted, reported and never run.** `<script src>` is not even
-  fetched: `Page::collectSubresources()` only queues `<link rel=stylesheet>` and
-  `<img>`, so a page whose only network traffic is script is fetched once, for the
-  HTML.
-* `<noscript>` content is rendered, because the tokenizer treats `noscript` as raw
-  text and the tree thus contains no markup from it; the rest of the page renders
-  as if scripting were disabled, which is the comparison a reader should make.
-* A page that builds its content in script renders empty or partial. A page that
-  merely enhances server-rendered HTML renders correctly.
-* Nothing that depends on script works: event handlers such as `onclick`,
-  `javascript:` URLs, `<button>` behaviour, form submission, timers, and every DOM
-  API. `:hover` and `:active` styling does not change either, because no
-  pseudo-class state is tracked at all (`css.md` lists the supported
-  pseudo-classes).
-* `ScriptEngine::scriptsBlockRendering()` returns `true` whenever no engine is
-  available — there is nothing to wait for, so nothing is deferred.
+Script sees ordinary JavaScript objects with accessor properties, so page code
+written for a browser works unchanged:
 
-The DevTools view makes this visible rather than mysterious.
-`Inspector::scriptSummary()` prints the number of inline and external scripts in
-the document, whether an engine is available, the text of
-`ScriptEngine::availabilityNote()` (which points at
-`src/javascript/ScriptEngine.h`), each skipped script, and every console message;
-it is part of `Inspector::fullReport()`, which `openqbrowser --dump-all` prints.
-`--dump-dom about:home` on a page with scripts shows the same information.
+```js
+document.getElementById("x").classList.add("on");
+el.textContent = "hi";
+el.style.color = "red";
+el.addEventListener("click", handler);
+```
 
-Because `ScriptEngine::execute()` returns `success == true`, `Page` does not build
-an error page for a document containing scripts; the page renders.
+Every member is an accessor rather than a stored property, because reading it
+must consult the live tree: `el.textContent` has to reflect the current
+children, not a snapshot taken when the wrapper was created.
 
-## What a future engine would have to provide
+### Ownership
 
-The seam was designed so these requirements are already visible in the code that
-surrounds it. An engine plugged in here would need:
+The DOM owns its nodes through `std::unique_ptr`, but script holds references
+that outlive a node's removal from the tree:
 
-1. **A parser and interpreter** for ECMAScript, plus the host objects the web
-   platform defines. This is the part that does not exist and is the reason the
-   feature is absent rather than partial.
-2. **A DOM binding** over `oqb::dom::Node`, `Element`, `Document` and the
-   attribute map in `src/dom/Node.h`. The DOM is the only object graph an engine
-   would be given: `execute()` receives `dom::Document *` and nothing else.
-   Today that tree is read by CSS and the box tree and never mutated after
-   parsing, so a binding that can add, remove and reorder nodes would also require
-   the renderer to be re-run in response.
-3. **Re-entry into the pipeline.** A DOM mutation or a style change must lead to
-   `StyleEngine::computeStyles()`, `BoxTreeBuilder::build()` and
-   `LayoutEngine::layout()` again. `Page::buildLayout()` already does exactly that
-   from scratch and can be called again; that is the integration point.
-4. **Event dispatch.** Mouse and keyboard input currently ends in
-   `ui::PageView`, which resolves a click to a link
-   (`PageView::linkElementAt()`) and emits `linkActivated()`. An engine would need
-   the events before that resolution, and a document-level target list rather than
-   the single `isLink()` test.
-5. **Timers and a task queue** that integrate with Qt's event loop, since the whole
-   browser runs on it.
-6. **A console and error channel.** This is the one part already implemented:
-   `ConsoleMessage` and `ExecutionResult` are the types, and
-   `Inspector::scriptSummary()` is the view.
-7. **Execution ordering and blocking semantics.** `Page::buildDocument()` currently
-   runs scripts after the *whole* document is parsed and before subresource
-   collection. A real engine must run each classic script as the tokenizer reaches
-   it — which is why the tokenizer is context-sensitive and the parser keeps a
-   stack of open elements — and must suspend for `<script src>` fetches. The
-   `scriptsBlockRendering()` hook is where the difference between "nothing to wait
-   for" and "parser-blocking script" would be expressed.
-8. **Isolation and limits.** A timeout or instruction budget per script, and
-   ideally a separate execution context. `security.md` describes what isolation
-   does not exist today.
+```js
+var el = document.getElementById("x");
+el.remove();
+el.textContent;      // still works
+```
 
-`ExecutionResult::success` and `execute()`'s `sourceName` already carry enough
-information for error reporting with a source name and line number, and
-`ScriptEngine::m_skipped` is a ready-made place for a diagnostic list.
+One rule makes that safe:
 
-## Why the seam exists before the engine
+> **Every node that is not in the document tree is owned by the context's
+> graveyard, for as long as the context lives.**
 
-Three reasons, all of which the header comment on `ScriptEngine` spells out:
+A node is owned by exactly one of the tree or the graveyard, never both and
+never by a wrapper. Detaching a node moves it to the graveyard; inserting one
+takes it back out. Nothing is freed while script could reach it, which trades a
+bounded amount of memory for the absence of use-after-free. The graveyard is
+emptied when the runtime is destroyed.
 
-* **The loader already knows where scripts are.** `Page::buildDocument()` knows the
-  document order, the `src` resolution rule (`Document::resolveUrl()`, which
-  honours `<base href>`) and the distinction between inline and external scripts.
-  That logic does not have to be written later, and it is exercised today.
-* **The reporting path is defined.** A script message reaches the user through the
-  same channel as a network error or a broken image: the inspector, the console
-  list and, for `Page::failed()`, the error page. Building the reporting path after
-  the engine would mean retrofitting the UI at both ends.
-* **The rest of the browser does not depend on it.** `scriptsBlockRendering()`
-  returns `true`, `execute()` returns success, and no stage of the pipeline
-  branches on `isAvailable()`. Adding an engine therefore changes one construction
-  site (`Page::Page()` creates `std::make_unique<javascript::ScriptEngine>()`) and
-  one subclass, not the architecture.
+This replaced an earlier design that gave each wrapper an ownership flag. That
+design was wrong for a case that is easy to write by accident: a node detached
+by one script and inserted by another lost track of who owned it. The graveyard
+has no such ambiguity, because ownership is a property of the node's position,
+not of a wrapper that may or may not still exist.
 
-Until then, the behaviour is deliberately visible rather than silent: the console
-says a script was skipped, the inspector lists it, and this document says why.
+### Wrappers
+
+Each node has at most one wrapper, so `el === document.body` holds and the same
+object comes back from every API, including `event.target`. Wrappers are cached
+in a `QHash<dom::Node *, JSValue>` for the life of the context.
+
+### Prototypes
+
+Four prototypes are built once: `Node`, `Element`, `Document` and `Event`.
+`Element` and `Document` inherit from `Node`, so neither repeats the node
+members. The constructors are installed as globals, so `instanceof` works:
+
+```js
+document.body instanceof Element     // true
+new Event("click") instanceof Event  // true
+```
+
+### What is exposed
+
+**Node**: `nodeName`, `nodeType`, `nodeValue`, `textContent`, `parentNode`,
+`parentElement`, `childNodes`, `firstChild`/`lastChild`,
+`nextSibling`/`previousSibling`, `ownerDocument`, `appendChild`,
+`insertBefore`, `removeChild`, `replaceChild`, `cloneNode`, `hasChildNodes`,
+`contains`, `remove`, `addEventListener`, `removeEventListener`,
+`dispatchEvent`, and the node type constants.
+
+**Element**: `tagName`, `id`, `className`, `classList`, `innerHTML`,
+`outerHTML`, `style`, `children`, `firstElementChild`, `childElementCount`,
+sibling elements, `getAttribute`/`setAttribute`/`removeAttribute`/
+`hasAttribute`, `querySelector(All)`, `getElementsByTagName`,
+`getElementsByClassName`, `closest`, `matches`, `getBoundingClientRect`, and
+the reflected attributes (`href`, `src`, `value`, `disabled`, and the rest).
+
+**Document**: `getElementById`, `querySelector(All)`, `getElementsBy*`,
+`createElement`, `createTextNode`, `createComment`, `write`, `documentElement`,
+`head`, `body`, `title`, `URL`, `readyState`.
+
+Two of these are deliberately shallow:
+
+- `getBoundingClientRect` reports a zero rect. The geometry lives in the
+  renderer, which the DOM bindings cannot reach without exposing the whole
+  layout engine to script. Reporting a wrong number would be worse than
+  reporting none.
+- `getComputedStyle` reports what the `style` attribute carries, not the
+  cascaded value, for the same reason.
+
+## Events
+
+`addEventListener`, `dispatchEvent` and the event constructors are implemented
+following the DOM standard's walk:
+
+1. The propagation path is collected from the target up to the root.
+2. Capture listeners run from the root **down**, skipping the target.
+3. The target's own capture listeners run, then its bubble listeners.
+4. Bubble listeners run back **up** the path, for an event that bubbles.
+5. The window's listeners run last.
+
+The window is the last stop because a page registers its `DOMContentLoaded` and
+`load` listeners on `window`, which is the global object rather than a node. It
+therefore has its own listener table, and the lifecycle events the browser fires
+consult both.
+
+Matching `removeEventListener` is by **handler identity and capture flag**, as
+in a browser: a different function with the same body does not remove anything.
+Listeners registered with `{ once: true }` are retired before they run, so a
+handler that re-dispatches the same event does not run twice.
+
+Event types are case-sensitive. Lower-casing them on registration would stop a
+listener for `DOMContentLoaded` from ever matching, which is exactly the bug
+this implementation first had.
+
+## Timers
+
+`setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`,
+`requestAnimationFrame` and `queueMicrotask` are implemented, with the clamping
+browsers apply:
+
+- a delay of zero or less still waits a turn, so a callback cannot run inside
+  the call that scheduled it;
+- a deeply nested timer is held to 4ms, so a callback that reschedules itself
+  cannot starve the browser;
+- a delay is capped at 24 hours, so a page cannot overflow the clock;
+- an interval reschedules from its previous due time, so it does not drift.
+
+Timers live in a `TimerQueue` that the **caller** advances:
+
+```cpp
+engine->runDueTimers(nowMs);      // run everything due at this time
+```
+
+That is what keeps a callback from firing in the middle of layout, and it is
+what lets the tests drive time deterministically instead of sleeping. A callback
+that throws is reported to the console and does not stop the others.
+
+## Running a page's scripts
+
+`Page` runs scripts the way the specification orders them:
+
+1. **Classic scripts** run where they appear, in document order. Their changes
+   are visible to every later script.
+2. **`defer` and `async` scripts** run after the document is parsed. `defer`
+   keeps document order, which is the ordering distinction a page can depend on.
+3. **`DOMContentLoaded`** fires after the deferred scripts.
+4. **`load`** fires after the subresources.
+5. **Timers** run on the frame clock, after which the document is re-styled and
+   re-laid out if a callback changed it.
+
+A `<script>` whose `type` is not a JavaScript MIME type is treated as data, not
+code. That matters for `<script type="application/json">`, which is common and
+would be both wrong and unsafe to execute.
+
+A script removed by an earlier script does not run, which the plan handles by
+checking each element against the tree before using it.
+
+### The load state machine
+
+Script sources are fetched through the same `ResourceLoader` as images and
+stylesheets, so a script is a subresource with its own accounting. Getting this
+wrong produces a browser that hangs rather than one that fails, so it is worth
+stating:
+
+- The document is identified by a **flag**, not by its URL, because a redirect
+  answers at a URL that was never requested.
+- A `file://` script is read **synchronously**, so it completes while the
+  document is still being built. Routing by state alone fed a script's source to
+  the HTML parser; the fetch list is gathered before fetching for the same
+  reason.
+- The "everything is done" check runs only in the subresource phase, and a
+  script fetch is counted separately from an image fetch, because a page whose
+  only subresource is a script must still finish loading.
+
+Each of those was a real bug found by the tests in `tests/integration/tst_scripting.cpp`.
+
+## What is not supported
+
+Stated plainly, because a page that feature-detects these should take its own
+fallback rather than silently doing the wrong thing:
+
+- **Modules.** `<script type="module">` is reported as skipped rather than run.
+  Its imports would need a module loader and a fetch hook the engine does not
+  have.
+- **`fetch` and `XMLHttpRequest`.** Network access from script is not exposed,
+  and both are **absent** rather than stubbed. That is deliberate: a stub would
+  make `typeof fetch === "function"` true, so a page would take its modern path,
+  call it, and break. Leaving them undefined lets feature detection pick the
+  fallback. Adding them means giving script a handle on the loader and a
+  promise-based completion path.
+- **Web Storage.** `localStorage` and `sessionStorage` are present and empty,
+  so a page reading back what it wrote gets nothing rather than an error.
+- **Navigation from script.** `location.href` reads correctly, but `reload`,
+  `assign` and `replace` report rather than navigate. Navigating would mean
+  unwinding the evaluation that asked for it; the browser's own loader is the
+  only thing that may start a load.
+- **Workers, canvas, WebSocket, `postMessage`.** Absent for the same reason, so
+  feature detection works.
+- **Window-level calls with nothing behind them** — `window.open`, `window.print`,
+  `window.scrollTo` and the rest — are present and report through the console
+  when called. They are kept as callable because a page calls them
+  unconditionally rather than testing for them first, so a TypeError there would
+  stop a script that has nothing to do with the missing feature.
+- **Selection, ranges, shadow DOM, mutation observers.** Absent.
+
+The stubs exist so that feature detection does not throw and a page takes its
+fallback path. Each reports once through the console, so the behaviour is
+visible rather than mysterious.
+
+## Testing
+
+Two suites cover this, and both are required to pass:
+
+- `tests/unit/tst_javascript.cpp` (39 cases) runs real scripts against a real
+  parsed document: the language, the DOM bindings, events, timers, console and
+  ownership.
+- `tests/integration/tst_scripting.cpp` (14 cases) drives scripted pages through
+  the actual load pipeline: inline, external and deferred scripts, error
+  reporting, the lifecycle events, and the completion accounting above.
+
+The tests are what found the bugs worth listing here — the synchronous-fetch
+reentrancy, the redirect misidentification, the case-sensitive event types, the
+`setTimeout(f, 0)` running too early, and a `QRegularExpression` being compiled
+on every class-name lookup, which alone made an article page take minutes to
+lay out.
+
+## See also
+
+- [overview.md](overview.md) for where scripting sits in the pipeline
+- [browser.md](browser.md) for the load lifecycle a page's scripts run inside
+- [testing.md](testing.md) for how to run the suites

@@ -52,17 +52,25 @@ Element *Document::body() const
 
 std::unique_ptr<Element> Document::createElement(const QString &tagName)
 {
-    return std::make_unique<Element>(tagName);
+    auto element = std::make_unique<Element>(tagName);
+    // The document is stamped on creation, so a node that is never inserted can
+    // still answer ownerDocument() and build its own children.
+    element->setOwnerDocument(this);
+    return element;
 }
 
 std::unique_ptr<Text> Document::createTextNode(const QString &data)
 {
-    return std::make_unique<Text>(data);
+    auto text = std::make_unique<Text>(data);
+    text->setOwnerDocument(this);
+    return text;
 }
 
 std::unique_ptr<Comment> Document::createComment(const QString &data)
 {
-    return std::make_unique<Comment>(data);
+    auto comment = std::make_unique<Comment>(data);
+    comment->setOwnerDocument(this);
+    return comment;
 }
 
 Element *Document::getElementById(const QString &id) const

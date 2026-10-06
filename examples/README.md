@@ -15,10 +15,12 @@ build step: open it with the browser and read the source beside the result.
 | `lists-and-tables.html` | List markers, nested lists, table display types |
 | `css-cascade.html` | Specificity, inheritance, `!important`, media queries, presentational attributes |
 | `interactive-survey.html` | A realistic page: header, navigation, cards, a form and a footer |
+| `scripted-page.html` | Building the DOM, timers, events, `style` and `classList` from page script |
 
 ## A note on scripting
 
-OpenQBrowser does not run JavaScript, so a page that builds its content in a
-script will render only its static markup. `interactive-survey.html` is written
-to be useful without scripting and to show what a page loses when scripts do not
-run: the form fields are present and styled, but nothing validates them.
+OpenQBrowser runs JavaScript, so a page that builds its content in a script
+renders that content. `interactive-survey.html` is deliberately written with
+plain markup and CSS instead, so the examples show what the renderer does on its
+own: the form fields are present and styled, but nothing submits or validates
+them. For scripting, see `examples/scripted-page.html`.

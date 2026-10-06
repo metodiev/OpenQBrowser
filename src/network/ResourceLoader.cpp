@@ -144,6 +144,7 @@ void ResourceLoader::startRequest(const PendingRequest &request)
 void ResourceLoader::handleHttpResponse(const Url &url, const HttpResponse &response)
 {
     Resource resource;
+    resource.requestedUrl = url;
     resource.url = response.finalUrl.isValid() ? response.finalUrl : url;
     resource.statusCode = response.statusCode;
     resource.mimeType = response.contentType();
@@ -173,6 +174,7 @@ void ResourceLoader::handleHttpResponse(const Url &url, const HttpResponse &resp
 void ResourceLoader::handleFailure(const Url &url, const QString &error)
 {
     Resource resource;
+    resource.requestedUrl = url;
     resource.url = url;
     resource.error = error;
     store(resource);

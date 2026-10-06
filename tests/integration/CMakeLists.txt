@@ -15,3 +15,4 @@ oqb_add_integration_test(tst_pipeline)
 oqb_add_integration_test(tst_redirect)
 
 oqb_add_integration_test(tst_perf)
+oqb_add_integration_test(tst_scripting)

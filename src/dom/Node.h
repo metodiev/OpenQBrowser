@@ -126,9 +126,17 @@ public:
     /// A short human readable label used by the inspector, e.g. "div#main".
     QString describe() const;
 
+    /// Records the document this node belongs to. Called by Document when it
+    /// creates a node, and by appendChild for a node arriving from elsewhere.
+    void setOwnerDocument(Document *document) { m_ownerDocument = document; }
+
 protected:
     NodeType m_type;
     Node *m_parent = nullptr;
+    /// The document this node was created by, so a detached node can still
+    /// answer ownerDocument(). The tree's own ownership is unchanged: a node in
+    /// the tree is owned by its parent, and this is only a back-reference.
+    Document *m_ownerDocument = nullptr;
     std::vector<std::unique_ptr<Node>> m_children;
 };
 

@@ -22,6 +22,20 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 option(OPENQBROWSER_BUILD_TESTS "Build the OpenQBrowser test suites" ON)
 option(OPENQBROWSER_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
+# Scripting.
+#
+# OpenQBrowser runs page script on QuickJS, an embeddable JavaScript engine. It is
+# fetched at configure time and built as part of this project, so there is nothing
+# to install and the browser stays portable; the alternative, a system framework,
+# would tie the browser to one platform.
+#
+# Set OPENQBROWSER_SCRIPTING=OFF to build without it. The browser then parses,
+# styles and renders as it always did and pages that need script will not
+# respond, which is the state this project was in before scripting existed.
+option(OPENQBROWSER_SCRIPTING "Run page JavaScript with the embedded QuickJS engine" ON)
+set(OPENQBROWSER_QUICKJS_TAG "v0.9.0" CACHE STRING
+    "The quickjs-ng release to build against")
+
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Network Svg)
 find_package(ZLIB REQUIRED)
 

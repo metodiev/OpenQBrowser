@@ -47,7 +47,9 @@ constexpr int kMaxSubresources = 200;
 Page::Page(const PageSettings &settings, QObject *parent)
     : QObject(parent)
     , m_settings(settings)
-    , m_scripts(std::make_unique<javascript::ScriptEngine>())
+    // The concrete engine, not the base class: the base class is the seam a
+    // build without QuickJS falls back to, and it runs nothing.
+    , m_scripts(std::make_unique<javascript::QuickJsScriptEngine>())
 {
     m_loader = std::make_unique<network::ResourceLoader>(this);
     m_loader->setMaxConcurrentRequests(m_settings.maxConcurrentRequests);
@@ -56,10 +58,22 @@ Page::Page(const PageSettings &settings, QObject *parent)
 
     connect(m_loader.get(), &network::ResourceLoader::finished, this,
             [this](const network::Resource &resource) {
-                if (m_state == State::LoadingDocument)
+                // The state alone does not say what a resource is. A file://
+                // script is read without any asynchronous step, so it completes
+                // while the document is still being built; routing by state
+                // would then feed the script's source to the HTML parser, or
+                // drop it once the page had moved on.
+                //
+                // The document is identified by a flag rather than by its URL,
+                // because a redirect answers at a URL that was never requested.
+                // It is the first response that arrives while the document is
+                // still being awaited, and there is exactly one of those.
+                if (!m_documentArrived && m_state == State::LoadingDocument) {
                     handleDocumentResource(resource);
-                else if (m_state == State::LoadingSubresources)
-                    handleSubresource(resource);
+                    return;
+                }
+
+                handleSubresource(resource);
             });
 }
 
@@ -90,6 +104,10 @@ void Page::load(const network::Url &url)
     m_failedResources.clear();
     m_pendingSubresources.clear();
     m_inFlightSubresources = 0;
+    m_scriptsToRun.clear();
+    m_pendingScripts = 0;
+    m_documentArrived = false;
+    m_domContentLoadedFired = false;
     m_document.reset();
     m_parsedDocument = nullptr;
     m_boxTree.reset();
@@ -180,6 +198,8 @@ QImage Page::renderToImage() const
 
 void Page::handleDocumentResource(const network::Resource &resource)
 {
+    // Whatever arrives first is the document, redirect or not.
+    m_documentArrived = true;
     m_finalUrl = resource.url.isValid() ? resource.url : m_url;
 
     if (!resource.ok()) {
@@ -234,14 +254,33 @@ void Page::buildDocument(const network::Resource &resource)
     }
     m_parsedDocument = m_document.get();
 
-    // Scripts are discovered and reported, but not run.
-    for (dom::Element *element : m_document->getElementsByTagName(QStringLiteral("script"))) {
-        const QString src = element->attribute(QStringLiteral("src"));
-        if (!src.isEmpty()) {
-            m_scripts->execute(QString(), m_document.get(), m_document->resolveUrl(src).toString());
-        } else {
-            m_scripts->execute(element->textContent(), m_document.get(), QStringLiteral("inline"));
+    // The engine was created before there was a document to point it at, so the
+    // bindings are told about this one before any script runs. Without this,
+    // `document` would be null inside every script and the lifecycle events
+    // would have nothing to dispatch to.
+    if (javascript::Engine *eng = engine())
+        eng->setDocument(m_document.get());
+
+    // The scripts are planned before the subresources are collected, because a
+    // script may insert elements that reference images or stylesheets of its
+    // own, and those have to be fetched too. An external script is itself a
+    // subresource, so it is requested at this point as well.
+    if (!m_scripts->isAvailable()) {
+        // Without an engine the scripts are listed rather than run and the
+        // document still renders. Showing the page beats showing nothing, and
+        // the inspector explains why nothing ran.
+        for (dom::Element *element : m_document->getElementsByTagName(QStringLiteral("script"))) {
+            const QString src = element->attribute(QStringLiteral("src"));
+            m_scripts->noteSkippedScript(src.isEmpty()
+                                             ? QStringLiteral("inline script")
+                                             : m_document->resolveUrl(src).toString());
         }
+        fireDomContentLoaded();
+    } else {
+        planScripts();
+        // The inline scripts run now; the external ones run as their sources
+        // arrive, which is what keeps them in document order.
+        runReadyScripts();
     }
 
     m_state = State::LoadingSubresources;
@@ -253,14 +292,279 @@ void Page::buildDocument(const network::Resource &resource)
 
     emit ready();
 
-    if (m_pendingSubresources.isEmpty()) {
-        recordHistory();
-        m_state = State::Idle;
-        emit finished();
+    if (m_pendingSubresources.isEmpty() && m_pendingScripts == 0) {
+        // Nothing left to wait for, so the page is as loaded as it will get and
+        // the load event fires now.
+        finishLoading();
         return;
     }
 
     requestNextSubresource();
+}
+
+void Page::finishLoading()
+{
+    // The document is fully parsed and every script has had its chance to run,
+    // so the events a page waits for can be fired. Whatever is still in the plan
+    // has no source and is reported rather than silently dropped.
+    for (const PendingScript &script : m_scriptsToRun) {
+        if (script.element && script.url.isValid())
+            m_scripts->noteSkippedScript(script.url.toString());
+    }
+    m_scriptsToRun.clear();
+
+    fireDomContentLoaded();
+    fireLoadEvent();
+
+    recordHistory();
+    m_state = State::Idle;
+    emit finished();
+}
+
+void Page::planScripts()
+{
+    if (!m_document)
+        return;
+
+    m_scriptsToRun.clear();
+    m_pendingScripts = 0;
+
+    // A module script executes after the document is parsed, and its imports
+    // would need a module loader this engine does not have, so it is reported
+    // rather than run. The attribute is still honoured as "do not run now" so
+    // that a page using modules does not execute code out of order.
+    const auto scriptElements
+        = m_document->getElementsByTagName(QStringLiteral("script"));
+
+    for (dom::Element *element : scriptElements) {
+        const QString type = element->attribute(QStringLiteral("type")).trimmed().toLower();
+
+        if (!isRunnableScript(element)) {
+            // A data block such as <script type="application/json"> is not code.
+            continue;
+        }
+
+        if (type == QLatin1String("module")) {
+            m_scripts->noteSkippedScript(
+                QStringLiteral("%1 (module scripts are not supported)")
+                    .arg(element->attribute(QStringLiteral("src")).isEmpty()
+                             ? QStringLiteral("inline module")
+                             : element->attribute(QStringLiteral("src"))));
+            continue;
+        }
+
+        PendingScript script;
+        script.element = element;
+        script.deferred = isDeferredScript(element);
+
+        const QString src = element->attribute(QStringLiteral("src"));
+        if (src.isEmpty()) {
+            // An inline script has its code in the document, so it is ready now.
+            script.source = element->textContent();
+            script.url = m_documentUrl;
+        } else {
+            script.url = m_document->resolveUrl(src);
+            script.ready = !script.url.isValid();
+            if (!script.url.isValid()) {
+                m_failedResources.append(
+                    QStringLiteral("%1: the script URL could not be resolved").arg(src));
+            }
+        }
+
+        m_scriptsToRun.push_back(script);
+    }
+
+    // The deferred scripts are moved to the end, keeping their relative order,
+    // which is what the specification asks for: they run after every classic
+    // script and after the document is parsed.
+    std::stable_partition(m_scriptsToRun.begin(), m_scriptsToRun.end(),
+                          [](const PendingScript &script) { return !script.deferred; });
+
+    // The external scripts are requested through the loader. The URLs are
+    // gathered first and fetched afterwards, because a fetch may complete
+    // synchronously - a file:// URL is read without any asynchronous step - and
+    // the completion path runs scripts, which replaces m_scriptsToRun. Fetching
+    // while iterating over it would invalidate the iterator.
+    std::vector<network::Url> toFetch;
+    for (const PendingScript &script : m_scriptsToRun) {
+        if (!script.ready)
+            toFetch.push_back(script.url);
+    }
+
+    for (const network::Url &url : toFetch) {
+        ++m_pendingScripts;
+        if (m_requestedResources.size() < kMaxSubresources + 16)
+            m_requestedResources.append(url.toString());
+        m_loader->fetch(url, m_documentUrl.toString());
+    }
+}
+
+bool Page::isRunnableScript(const dom::Element *element)
+{
+    // An absent type means JavaScript. An explicit type must be a JavaScript
+    // MIME type, which is what keeps a JSON data block from being executed.
+    const QString type = element->attribute(QStringLiteral("type")).trimmed().toLower();
+    if (type.isEmpty())
+        return true;
+
+    return type == QLatin1String("text/javascript")
+        || type == QLatin1String("application/javascript")
+        || type == QLatin1String("text/ecmascript")
+        || type == QLatin1String("application/ecmascript")
+        || type == QLatin1String("application/x-javascript")
+        || type == QLatin1String("module") || type == QLatin1String("text/babel");
+}
+
+bool Page::isDeferredScript(const dom::Element *element)
+{
+    // defer and async both mean "not where it appears". async would run as soon
+    // as it arrived rather than in order, but the document is already parsed
+    // here, so running in document order is the closest honest behaviour and is
+    // what a page that relies on async for ordering must not depend on anyway.
+    return element->hasAttribute(QStringLiteral("defer"))
+        || element->hasAttribute(QStringLiteral("async"));
+}
+
+void Page::runReadyScripts()
+{
+    if (!m_document || m_pendingScripts > 0)
+        return;
+
+    // A classic script must run with the document as it stands, and a script
+    // that inserts another one changes the list, so the plan is walked by index
+    // rather than by iterator and re-read each time.
+    std::vector<PendingScript> remaining;
+    remaining.reserve(m_scriptsToRun.size());
+
+    for (const PendingScript &script : m_scriptsToRun) {
+        // A script whose source is still in flight is kept for the next pass;
+        // the ones after it must not be run before it.
+        if (!script.ready) {
+            remaining.push_back(script);
+            continue;
+        }
+
+        // A script removed by an earlier one does not run, which is what the
+        // specification says and what a page that cleans up after itself needs.
+        if (!script.element || !script.element->parent())
+            continue;
+
+        const bool external = !script.element->attribute(QStringLiteral("src")).isEmpty();
+        if (external && script.source.isEmpty()) {
+            // The fetch failed; the failure list already explains why.
+            m_scripts->noteSkippedScript(script.url.toString());
+            continue;
+        }
+
+        runScriptElement(script.element, external ? script.source : QString());
+    }
+
+    m_scriptsToRun = std::move(remaining);
+}
+
+void Page::runScriptElement(dom::Element *element, const QString &source)
+{
+    if (!m_document || !element)
+        return;
+
+    const QString src = element->attribute(QStringLiteral("src"));
+
+    // An inline script is named by the document URL, since it has no location of
+    // its own; an external one by its own URL, which is what a stack trace should
+    // show.
+    const QString sourceName = src.isEmpty() ? m_documentUrl.toString() + QStringLiteral("#inline")
+                                             : element->attribute(QStringLiteral("src"));
+
+    if (src.isEmpty()) {
+        const QString code = element->textContent();
+        if (code.trimmed().isEmpty())
+            return; // An empty script element is legal and does nothing.
+        m_scripts->execute(code, m_document.get(), sourceName);
+        return;
+    }
+
+    if (!source.isEmpty()) {
+        m_scripts->execute(source, m_document.get(), sourceName);
+        return;
+    }
+
+    // The source never arrived, which the failure list already explains.
+    m_scripts->noteSkippedScript(sourceName);
+}
+
+void Page::fireDomContentLoaded()
+{
+    if (m_domContentLoadedFired || !m_document)
+        return;
+    m_domContentLoadedFired = true;
+
+#ifdef OPENQBROWSER_SCRIPTING
+    // A page reads readyState to decide whether it may query the DOM, so it is
+    // updated before the event rather than after.
+    if (javascript::Engine *eng = engine()) {
+        eng->setReadyState(QStringLiteral("interactive"));
+        javascript::Events::dispatchLifecycle(eng->context(), m_document.get(),
+                                              QStringLiteral("DOMContentLoaded"), true, false);
+    }
+#else
+    // Without an engine there are no listeners, so there is nothing to dispatch.
+#endif
+}
+
+void Page::fireLoadEvent()
+{
+    if (!m_document)
+        return;
+
+#ifdef OPENQBROWSER_SCRIPTING
+    if (javascript::Engine *eng = engine()) {
+        eng->setReadyState(QStringLiteral("complete"));
+        javascript::Events::dispatchLifecycle(eng->context(), m_document.get(),
+                                              QStringLiteral("load"), false, false);
+    }
+#endif
+}
+
+void Page::serviceScripts(qint64 nowMs)
+{
+    javascript::Engine *eng = engine();
+    if (!eng)
+        return;
+
+#ifdef OPENQBROWSER_SCRIPTING
+
+    eng->runDueTimers(nowMs);
+
+    // A timer that changed the document has to be re-styled and re-laid out, or
+    // the change would not be visible until something else caused a layout.
+    if (eng->takeDocumentTouched()) {
+        if (m_styles)
+            m_styles->computeStyles(m_document.get());
+        buildLayout();
+        emit ready();
+    }
+#else
+    Q_UNUSED(nowMs);
+#endif
+}
+
+bool Page::runsScripts() const
+{
+    return m_scripts && m_scripts->isAvailable();
+}
+
+bool Page::hasPendingScriptWork() const
+{
+    const auto *concrete = dynamic_cast<const javascript::QuickJsScriptEngine *>(m_scripts.get());
+    if (!concrete || !concrete->engine())
+        return false;
+    return concrete->engine()->hasPendingWork();
+}
+
+javascript::Engine *Page::engine()
+{
+    auto *concrete = dynamic_cast<javascript::QuickJsScriptEngine *>(m_scripts.get());
+    return concrete ? concrete->engine() : nullptr;
 }
 
 void Page::collectSubresources()
@@ -323,12 +627,29 @@ void Page::requestNextSubresource()
 
 void Page::handleSubresource(const network::Resource &resource)
 {
-    if (m_inFlightSubresources > 0)
+    // A script is fetched through the loader as well, but it is counted in
+    // m_pendingScripts rather than in m_inFlightSubresources, so the two counts
+    // are kept apart. The URL it was requested at is what identifies it, since a
+    // redirect answers at a different one.
+    const network::Url requestUrl
+        = resource.requestedUrl.isValid() ? resource.requestedUrl : resource.url;
+    const bool isScriptFetch
+        = deliverScriptSource(requestUrl, resource.ok() ? resource.text() : QString());
+
+    if (!isScriptFetch && m_inFlightSubresources > 0)
         --m_inFlightSubresources;
+
+    if (isScriptFetch) {
+        // Running the plan here is what keeps the execution order right: a script
+        // that is ready runs before the ones after it, and a script still in
+        // flight holds them back.
+        runReadyScripts();
+    }
 
     if (!resource.ok()) {
         m_failedResources.append(QStringLiteral("%1: %2")
                                      .arg(resource.url.toString(), resource.error));
+
     } else if (resource.isCss()) {
         // A late stylesheet still takes effect: the cascade is re-run and the
         // page is laid out again, which is what a browser does when a stylesheet
@@ -353,18 +674,60 @@ void Page::handleSubresource(const network::Resource &resource)
         }
     }
 
-    if (m_inFlightSubresources == 0 && m_pendingSubresources.isEmpty()) {
-        m_state = State::Idle;
+    // Only the subresource phase may end the load. A script source that arrives
+    // while the document is still being built takes this path too, and ending the
+    // load there would leave the scripts after it unrunnable.
+    if (m_state != State::LoadingSubresources)
+        return;
 
+    if (m_inFlightSubresources == 0 && m_pendingSubresources.isEmpty() && m_pendingScripts == 0) {
         // One last pass, so a stylesheet or image that arrived with the final
         // subresource is reflected in the layout the caller sees. The coalesced
         // pass may not have run yet, and after this point it never would.
+        m_state = State::Idle;
         buildLayout();
-
-        recordHistory();
         emit ready();
-        emit finished();
+
+        finishLoading();
     }
+}
+
+bool Page::deliverScriptSource(const network::Url &url, const QString &source)
+{
+    bool delivered = false;
+
+    for (PendingScript &script : m_scriptsToRun) {
+        if (script.ready || script.url != url)
+            continue;
+
+        // The source is handed over and the slot marked ready, but the script is
+        // not run here: runReadyScripts walks the plan in order, so a script that
+        // is still loading holds back the ones after it, which is what classic
+        // script ordering requires.
+        script.source = source;
+        script.ready = true;
+        delivered = true;
+    }
+
+    if (delivered && m_pendingScripts > 0)
+        --m_pendingScripts;
+
+    return delivered;
+}
+
+
+
+
+
+
+
+
+
+
+
+bool Page::hasPendingScripts() const
+{
+    return m_pendingScripts > 0;
 }
 
 void Page::scheduleRelayout()

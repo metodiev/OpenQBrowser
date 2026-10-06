@@ -1,5 +1,9 @@
 #include <QtTest>
 
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+
 #include "browser/Page.h"
 #include "browser/Tab.h"
 #include "css/Style.h"
@@ -27,6 +31,7 @@ private slots:
     void pageViewScrollsWithinTheDocument();
     void pageViewFindsLinksUnderTheCursor();
     void titleFollowsTheDocument();
+    void runsPageTimersInTheWindow();
 };
 
 /// Waits for a tab to finish loading, or fails the test.
@@ -331,6 +336,55 @@ void BrowserTest::titleFollowsTheDocument()
 
     QCOMPARE(view->tab()->title(), QStringLiteral("Version"));
     QVERIFY(window.windowTitle().contains(QLatin1String("Version")));
+}
+
+/// Page timers must run in the window, not only in a headless caller. The view
+/// owns the frame clock, so this drives a real window and waits for the page's
+/// own interval to change the document.
+void BrowserTest::runsPageTimersInTheWindow()
+{
+    const QString path = QDir(QDir::tempPath()).filePath(QStringLiteral("oqb-timer-page.html"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("<html><body><div id='t'>waiting</div>"
+               "<script>"
+               "var n = 0;"
+               "var h = setInterval(function () {"
+               "  n++;"
+               "  document.getElementById('t').textContent = 'tick ' + n;"
+               "  if (n >= 3) { clearInterval(h); }"
+               "}, 50);"
+               "</script></body></html>");
+    file.close();
+
+    browser::PageSettings settings;
+    settings.viewportWidth = 640;
+    settings.viewportHeight = 480;
+    ui::MainWindow window(settings);
+    window.openUrl(network::Url::fromLocalFile(path));
+
+    auto *view = window.findChild<ui::PageView *>();
+    QVERIFY(view != nullptr);
+    browser::Tab *tab = view->tab();
+    QVERIFY(tab != nullptr);
+
+    // The interval fires three times, so this waits for the third tick rather
+    // than for a fixed duration, and fails with the text it saw.
+    QString text;
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < 5000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        if (tab->page()->document()) {
+            if (auto *element = tab->page()->document()->getElementById(QStringLiteral("t")))
+                text = element->textContent();
+        }
+        if (text == QLatin1String("tick 3"))
+            break;
+    }
+
+    QCOMPARE(text, QStringLiteral("tick 3"));
+    QFile::remove(path);
 }
 
 QTEST_MAIN(BrowserTest)

@@ -30,7 +30,7 @@ include path is why every include in the tree is written as
 
 | Target | Type | Links | Contents |
 | --- | --- | --- | --- |
-| `oqb_core` | `STATIC` | `Qt6::Core Qt6::Gui Qt6::Network ZLIB::ZLIB` (PUBLIC), `oqb_project_options` (PRIVATE) | Everything except `main.cpp` and `src/ui/`: network, dom, html, css, renderer, storage, security, javascript, devtools, browser. |
+| `oqb_core` | `STATIC` | `Qt6::Core Qt6::Gui Qt6::Network ZLIB::ZLIB qjs` (PUBLIC), `oqb_project_options` (PRIVATE) | Everything except `main.cpp` and `src/ui/`: network, dom, html, css, renderer, storage, security, javascript, devtools, browser. |
 | `oqb_ui` | `STATIC` | `oqb_core`, `Qt6::Widgets` (PUBLIC), `oqb_project_options` (PRIVATE) | `ui/PageView.cpp`, `ui/MainWindow.cpp`, `assets/assets.qrc`. |
 | `openqbrowser` | `qt_add_executable` | `oqb_ui`, `oqb_project_options`, `Qt6::Widgets` | `main.cpp`. |
 
@@ -80,15 +80,15 @@ executable, links it, sets the console-executable properties, registers it with
 
 | Function | Links | Notes |
 | --- | --- | --- |
-| `oqb_add_unit_test` | `oqb_core`, `oqb_project_options`, `Qt6::Test` | Four targets: `tst_url`, `tst_html`, `tst_css`, `tst_layout`. |
-| `oqb_add_integration_test` | same | Two targets: `tst_http`, `tst_pipeline`; both get `TIMEOUT 120` for the network cases. |
+| `oqb_add_unit_test` | `oqb_core`, `oqb_project_options`, `Qt6::Test` | Five targets: `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript`. |
+| `oqb_add_integration_test` | same | Five targets: `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting`; all get `TIMEOUT 120` for the network cases. |
 | `oqb_add_browser_test` | `oqb_ui`, `oqb_project_options`, `Qt6::Test`, `Qt6::Widgets` | `tst_browser`; also gets `TIMEOUT 120`. |
 
-The integration suite registers three targets (`tst_http`, `tst_pipeline`,
-`tst_redirect`, `tst_perf`), so a full `ctest` run reports nine tests. `tst_redirect` drives
-real pages, including `http://github.com` and a large Wikipedia article, so it is
-the one suite that reaches the public network; its 120-second timeout exists for
-exactly that reason.
+The integration suite registers four targets (`tst_http`, `tst_pipeline`,
+`tst_redirect`, `tst_perf`) plus `tst_scripting`, so a full `ctest` run reports
+eleven tests. `tst_redirect` drives real pages, including `http://github.com` and
+a large Wikipedia article, so it is the one suite that reaches the public
+network; its 120-second timeout exists for exactly that reason.
 
 All binaries land in `${CMAKE_BINARY_DIR}/bin` (`build/bin/`), which is why the
 commands in `testing.md` and the README use that path.

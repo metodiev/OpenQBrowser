@@ -2,6 +2,7 @@
 
 #include "css/Style.h"
 #include "dom/Document.h"
+#include "javascript/Engine.h"
 #include "javascript/ScriptEngine.h"
 #include "renderer/BoxTree.h"
 #include "renderer/Layout.h"
@@ -244,10 +245,16 @@ QString Inspector::scriptSummary(const javascript::ScriptEngine *engine,
         return out;
     }
 
-    out += engine->isAvailable() ? QStringLiteral("engine: available\n")
-                                 : QStringLiteral("engine: none\n");
-    out += javascript::ScriptEngine::availabilityNote();
-    out += u'\n';
+    // The note only applies when there is no engine. Printing it unconditionally
+    // told the reader that scripting was unavailable even when it was working,
+    // which is worse than saying nothing.
+    if (engine->isAvailable()) {
+        out += QStringLiteral("engine: %1\n").arg(javascript::Engine::engineVersion());
+    } else {
+        out += QStringLiteral("engine: none\n");
+        out += javascript::ScriptEngine::availabilityNote();
+        out += u'\n';
+    }
 
     for (const QString &skipped : engine->skippedScripts())
         out += QStringLiteral("skipped: %1\n").arg(skipped);

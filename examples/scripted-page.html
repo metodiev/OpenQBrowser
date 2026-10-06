@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scripted page &mdash; OpenQBrowser examples</title>
+<style>
+  body { margin: 0; font-family: Georgia, serif; color: #222; background: #fbfbfa; }
+  header { background: #1f3a5f; color: #fff; padding: 24px 32px; }
+  header h1 { margin: 0; font-size: 26px; }
+  header p { margin: 6px 0 0; opacity: 0.85; font-size: 14px; }
+  main { padding: 24px 32px; max-width: 46em; }
+  section { margin-bottom: 28px; }
+  h2 { font-size: 18px; border-bottom: 1px solid #ddd; padding-bottom: 6px; }
+  ul { padding-left: 20px; }
+  li { margin: 4px 0; }
+  .done { color: #2c6e3f; font-weight: bold; }
+  .pending { color: #8a6d1f; }
+  button { font: inherit; padding: 6px 14px; border: 1px solid #1f3a5f;
+           background: #fff; color: #1f3a5f; cursor: pointer; border-radius: 3px; }
+  button:hover { background: #1f3a5f; color: #fff; }
+  #counter { font-size: 32px; font-weight: bold; color: #1f3a5f; }
+  .box { border: 1px solid #ddd; background: #fff; padding: 12px; border-radius: 3px; }
+  .note { font-size: 13px; color: #666; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Scripted page</h1>
+  <p>Every list below is built by page script, not by markup.</p>
+</header>
+
+<main>
+
+  <section id="build">
+    <h2>1. Building the document from script</h2>
+    <div class="box">
+      <p class="note">This list is created with <code>createElement</code> and
+         <code>appendChild</code>.</p>
+      <ul id="generated"><!-- filled by script --></ul>
+    </div>
+  </section>
+
+  <section id="timers">
+    <h2>2. Timers</h2>
+    <div class="box">
+      <p>Counts up once a second, stopping after five:</p>
+      <p id="counter">0</p>
+      <p id="timerState" class="pending">running&hellip;</p>
+    </div>
+  </section>
+
+  <section id="events">
+    <h2>3. Events</h2>
+    <div class="box">
+      <p>Clicks are counted by one listener on the container, which is event
+         delegation &mdash; the buttons themselves have no listeners.</p>
+      <p>Button clicks: <strong id="clicks">0</strong></p>
+      <p>
+        <button type="button" data-action="a">Button A</button>
+        <button type="button" data-action="b">Button B</button>
+      </p>
+      <p id="lastAction" class="note">No button has been pressed.</p>
+    </div>
+  </section>
+
+  <section id="style">
+    <h2>4. Changing style from script</h2>
+    <div class="box">
+      <p>This paragraph is restyled in place:</p>
+      <p id="styled">Watch this change.</p>
+      <p><button type="button" id="restyle">Restyle it</button></p>
+    </div>
+  </section>
+
+  <section id="classes">
+    <h2>5. classList</h2>
+    <div class="box">
+      <p id="toggled" class="pending">The class on this line toggles.</p>
+      <p><button type="button" id="toggle">Toggle it</button></p>
+    </div>
+  </section>
+
+  <section id="queries">
+    <h2>6. Querying</h2>
+    <div class="box">
+      <p class="note">The script counts what it can find:</p>
+      <ul id="found"><!-- filled by script --></ul>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// 1. Build a list from an array, which is the most common thing a page script
+//    does. Nothing here exists in the markup.
+(function () {
+  var items = ['Built with createElement', 'Inserted with appendChild',
+               'Text set with textContent'];
+  var list = document.getElementById('generated');
+  for (var i = 0; i < items.length; i++) {
+    var li = document.createElement('li');
+    li.textContent = items[i];
+    list.appendChild(li);
+  }
+})();
+
+// 2. An interval that stops itself, and a timeout that reports the stop.
+(function () {
+  var count = 0;
+  var counter = document.getElementById('counter');
+  var state = document.getElementById('timerState');
+
+  var tick = setInterval(function () {
+    count += 1;
+    counter.textContent = count;
+    if (count >= 5) {
+      clearInterval(tick);
+      state.textContent = 'stopped after ' + count + ' ticks';
+      state.className = 'done';
+    }
+  }, 1000);
+})();
+
+// 3. One listener on the container handles clicks from either button. The
+//    handler reads the attribute to tell them apart.
+(function () {
+  var clicks = 0;
+  var last = document.getElementById('lastAction');
+  var counter = document.getElementById('clicks');
+
+  document.getElementById('events').addEventListener('click', function (event) {
+    var action = event.target.getAttribute('data-action');
+    if (!action) {
+      return;  // A click somewhere else in the section is ignored.
+    }
+    clicks += 1;
+    counter.textContent = clicks;
+    last.textContent = 'Last pressed: button ' + action.toUpperCase();
+  });
+})();
+
+// 4. Restyle an element through the style object.
+(function () {
+  var styled = document.getElementById('styled');
+  var changed = false;
+
+  document.getElementById('restyle').addEventListener('click', function () {
+    if (changed) {
+      styled.removeAttribute('style');
+      styled.textContent = 'Watch this change.';
+    } else {
+      styled.style.color = '#b3261e';
+      styled.style.fontSize = '20px';
+      styled.style.fontWeight = 'bold';
+      styled.textContent = 'Restyled from script.';
+    }
+    changed = !changed;
+  });
+})();
+
+// 5. Toggle a class, which the stylesheet picks up.
+(function () {
+  var toggled = document.getElementById('toggled');
+  document.getElementById('toggle').addEventListener('click', function () {
+    toggled.classList.toggle('done');
+    toggled.textContent = toggled.classList.contains('done')
+      ? 'This line now carries the done class.'
+      : 'This line no longer carries the done class.';
+  });
+})();
+
+// 6. Query the document and report what was found, which also demonstrates
+//    that the earlier sections really did change the tree.
+(function () {
+  var found = document.getElementById('found');
+  var summary = [
+    'elements in the document: ' + document.querySelectorAll('*').length,
+    'sections: ' + document.querySelectorAll('section').length,
+    'generated list items: ' + document.querySelectorAll('#generated li').length,
+    'buttons: ' + document.getElementsByTagName('button').length,
+    'elements with the done class: ' + document.getElementsByClassName('done').length
+  ];
+  for (var i = 0; i < summary.length; i++) {
+    var li = document.createElement('li');
+    li.textContent = summary[i];
+    found.appendChild(li);
+  }
+})();
+
+console.log('scripted-page.html: every section was built by script');
+</script>
+
+</body>
+</html>

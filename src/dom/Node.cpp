@@ -96,7 +96,35 @@ QString AttributeMap::value(const QString &name, const QString &defaultValue) co
 QStringList AttributeMap::classList() const
 {
     const QString classes = value(QStringLiteral("class"));
-    return classes.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    if (classes.isEmpty())
+        return {};
+
+    // A hand-written split rather than QString::split with a regular expression.
+    // This is on the hottest path in the browser: it runs for every class
+    // selector against every element, and building a QRegularExpression each
+    // time costs more than a page's entire layout. Class names are separated by
+    // ASCII whitespace, so a scan is both faster and exact.
+    QStringList result;
+    QString current;
+    current.reserve(16);
+
+    const auto flush = [&result, &current] {
+        if (!current.isEmpty()) {
+            result.append(current);
+            current.clear();
+        }
+    };
+
+    for (const QChar c : classes) {
+        if (c == u' ' || c == u'\t' || c == u'\n' || c == u'\r' || c == u'\f') {
+            flush();
+            continue;
+        }
+        current += c;
+    }
+    flush();
+
+    return result;
 }
 
 // ----------------------------------------------------------------------- Node
@@ -112,9 +140,20 @@ Node *Node::appendChild(std::unique_ptr<Node> child)
 {
     if (!child)
         return nullptr;
+
+    // A node that already has a parent is moved rather than copied, so the old
+    // parent has to hand ownership back. The result of removeChild is adopted
+    // instead of the argument, because discarding it would delete the node that
+    // is about to be re-inserted.
     if (child->m_parent)
-        child->m_parent->removeChild(child.get());
+        child = child->m_parent->removeChild(child.get());
+
+    if (!child)
+        return nullptr;
+
     child->m_parent = this;
+    if (!child->m_ownerDocument && this->isDocument())
+        child->setOwnerDocument(static_cast<Document *>(this));
     Node *raw = child.get();
     m_children.push_back(std::move(child));
     return raw;
@@ -127,10 +166,18 @@ Node *Node::insertBefore(std::unique_ptr<Node> child, Node *reference)
     if (!reference || reference->m_parent != this)
         return appendChild(std::move(child));
 
-    const int index = reference->indexInParent();
+    // As in appendChild, a node with an existing parent is moved, and the old
+    // parent's ownership has to be adopted rather than dropped.
     if (child->m_parent)
-        child->m_parent->removeChild(child.get());
+        child = child->m_parent->removeChild(child.get());
+
+    if (!child)
+        return nullptr;
+
+    const int index = reference->indexInParent();
     child->m_parent = this;
+    if (!child->m_ownerDocument && this->isDocument())
+        child->setOwnerDocument(static_cast<Document *>(this));
     Node *raw = child.get();
     m_children.insert(m_children.begin() + index, std::move(child));
     return raw;
@@ -230,6 +277,12 @@ Element *Node::parentElement() const
 
 Document *Node::ownerDocument() const
 {
+    // A node remembers the document it was created by. Walking up the parents
+    // alone is not enough: a detached node has no parent, yet script can still
+    // ask it to create children or read its text, and a browser answers.
+    if (m_ownerDocument)
+        return m_ownerDocument;
+
     for (Node *node = const_cast<Node *>(this); node; node = node->m_parent) {
         if (node->isDocument())
             return static_cast<Document *>(node);

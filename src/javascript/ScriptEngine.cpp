@@ -49,10 +49,9 @@ ExecutionResult ScriptEngine::execute(const QString &source, dom::Document *docu
 QString ScriptEngine::availabilityNote()
 {
     return QStringLiteral(
-        "Scripting is not implemented yet. OpenQBrowser parses and renders the "
-        "document but does not execute <script> content, so interactive pages "
-        "will not respond. The interface in src/javascript/ScriptEngine.h is the "
-        "seam an engine would plug into.");
+        "This build has no JavaScript engine, so page scripts do not run and "
+        "interactive pages will not respond. It was configured with "
+        "OPENQBROWSER_SCRIPTING=OFF; rebuild with it ON to enable scripting.");
 }
 
 } // namespace oqb::javascript

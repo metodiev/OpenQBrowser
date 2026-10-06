@@ -27,39 +27,41 @@ struct ExecutionResult
     QString error;
     int line = 0;
     QList<ConsoleMessage> messages;
+    /// The script's completion value, already converted to text. A console shows
+    /// it under each evaluation, and a test can assert on it directly.
+    QString value;
 };
 
 /// The seam between the browser and a JavaScript engine.
 ///
-/// OpenQBrowser does not embed a JavaScript engine yet: writing a correct one is
-/// a project of its own and the browser is more useful without a half-finished
-/// implementation of it. This interface exists so that the surrounding design is
-/// already right when one arrives:
+/// The browser talks to this interface rather than to QuickJS directly, so the
+/// engine is one replaceable piece. Two implementations exist:
 ///
-///   * the page loader already knows where a <script> element sits in the
-///     document and in what order scripts must run;
-///   * the console and error reporting paths are defined, so a message from a
-///     script reaches the user through the same channel as a network error;
-///   * the DOM is the only thing an engine would need to be given.
+///   * `QuickJsScriptEngine`, which owns a real engine and is what a normal
+///     build constructs; it is declared in Engine.h.
+///   * This base class, whose execute() reports what it would have run. It is
+///     what a build with `OPENQBROWSER_SCRIPTING=OFF` falls back to, and its
+///     behaviour is deliberately visible rather than silent: the inspector lists
+///     the scripts that were skipped, and the console explains why.
 ///
-/// Until an engine is plugged in, execute() reports what it would have run, and
-/// the browser continues to render the document as if scripts were disabled.
-/// That is deliberately visible rather than silent: the inspector lists the
-/// scripts that were skipped, and the console explains why.
-///
-/// See architecture/javascript.md for the plan.
+/// See architecture/javascript.md.
 class ScriptEngine
 {
 public:
     ScriptEngine() = default;
     virtual ~ScriptEngine();
 
-    /// True when an engine is present and can run code. Always false today.
+    /// True when an engine is present and can run code. False for the base
+    /// class, which is what a build without QuickJS falls back to.
     virtual bool isAvailable() const { return false; }
 
     /// Runs `source` against `document`.
     virtual ExecutionResult execute(const QString &source, dom::Document *document,
                                     const QString &sourceName = {});
+
+    /// Points the engine at a document. The browser calls this once the document
+    /// is parsed, because an engine is created before one exists.
+    virtual void setDocument(dom::Document *document) { Q_UNUSED(document); }
 
     /// The console messages collected so far.
     const QList<ConsoleMessage> &messages() const { return m_messages; }

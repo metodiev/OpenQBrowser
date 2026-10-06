@@ -18,6 +18,10 @@ struct Resource
 {
     Url url;
     QByteArray data;
+    /// The URL the resource was requested at. A redirect answers at a different
+    /// URL, so `url` alone cannot tell a caller whether this is the response to
+    /// the request it made.
+    Url requestedUrl;
     QString mimeType;
     QString error;
     int statusCode = 0;

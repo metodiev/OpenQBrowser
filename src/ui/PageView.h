@@ -1,7 +1,10 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QPoint>
 #include <QWidget>
+
+class QTimer;
 
 #include "network/Url.h"
 
@@ -74,7 +77,21 @@ private:
     /// The link element under a viewport point, walking the box tree.
     const dom::Element *linkElementAt(const QPoint &position) const;
 
+    /// Drives page timers and repaints. A browser has a frame clock; this is the
+    /// smallest version of one: it wakes often enough for a page's
+    /// setTimeout and requestAnimationFrame callbacks to run on time, and it
+    /// sleeps when the page has nothing pending so an idle tab costs nothing.
+    void serviceFrame();
+
+    /// Starts the frame clock when the page has work pending, so an idle page
+    /// costs nothing.
+    void ensureFrameClock();
+
     browser::Tab *m_tab = nullptr;
+    QTimer *m_frameTimer = nullptr;
+    /// When the frame clock started, which is the origin page timers are
+    /// measured from.
+    QElapsedTimer m_frameClock;
     QPoint m_scroll;
     bool m_showBoxModel = false;
     /// True once a press has happened, so a release on the same link counts as

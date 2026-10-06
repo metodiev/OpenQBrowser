@@ -22,8 +22,8 @@ depends only on the stages before it.
 
 ## Status
 
-OpenQBrowser is **experimental software**. It is not safe for everyday browsing,
-it has no sandbox, and it does not run JavaScript.
+OpenQBrowser is **experimental software**. It is not safe for everyday browsing
+and it has no sandbox.
 
 What works today:
 
@@ -34,14 +34,15 @@ What works today:
 | DOM | Element, text and comment nodes with attributes and classes |
 | CSS | Tokenizer, selectors with specificity, the cascade, media queries |
 | Rendering | Block and inline layout, margin collapsing, painting, images |
+| JavaScript | QuickJS embedded: the DOM bindings, events and timers; inline, external, `defer` and `async` scripts |
 | Browser | Tabs, back/forward history, bookmarks, built-in `about:` pages |
-| Testing | Nine test suites, all passing |
+| Testing | Eleven test suites, all passing |
 
 What does not work yet, and what you will observe:
 
 | Area | What happens |
 | --- | --- |
-| JavaScript | Scripts are never executed. Interactive pages will not respond. See [architecture/javascript.md](./architecture/javascript.md). |
+| Modules, `fetch` | `<script type="module">` is skipped, and `fetch`/`XMLHttpRequest` are absent. See [architecture/javascript.md](./architecture/javascript.md). |
 | Flexbox, grid | `display: flex` and `display: grid` are recognised but laid out as blocks. |
 | Absolute positioning | `position: absolute` and `fixed` are parsed but the element stays in flow. |
 | Forms | Rendered and styled, but nothing is submitted. |
@@ -56,6 +57,11 @@ What does not work yet, and what you will observe:
 * CMake 3.21 or newer
 * Qt 6.5 or newer (Core, Gui, Widgets, Network, Test)
 * zlib
+* A network connection on the **first** build, to fetch QuickJS
+
+QuickJS is downloaded and built by CMake, so it needs no install step. Pass
+`-DOPENQBROWSER_SCRIPTING=OFF` to build without it; the browser still renders and
+reports that scripts do not run.
 
 On macOS with Homebrew:
 
@@ -198,15 +204,15 @@ OpenQBrowser/
 │   ├── css/         CSS tokenizer, selectors, cascade, media queries
 │   ├── renderer/    Box tree, layout, painting
 │   ├── browser/     Page and Tab orchestration, built-in pages
-│   ├── javascript/  The integration seam for a future engine
+│   ├── javascript/  QuickJS engine, DOM bindings, events, timers
 │   ├── storage/     History and bookmarks
 │   ├── security/    Origin, transport and permission policy
 │   ├── devtools/    The inspector
 │   ├── ui/          Qt Widgets shell: window, tabs, address bar
 │   └── main.cpp     Command line interface
 ├── tests/
-│   ├── unit/        URL, HTML, CSS and layout
-│   ├── integration/ HTTP and the full pipeline
+│   ├── unit/        URL, HTML, CSS, layout and JavaScript
+│   ├── integration/ HTTP, the full pipeline and scripted pages
 │   └── browser/     The window, tabs and navigation
 ├── examples/        Pages that exercise the engine
 ├── architecture/    Design documents for every subsystem
@@ -255,7 +261,7 @@ the subsystem you care about:
 * [css.md](./architecture/css.md) — selectors, the cascade, media queries
 * [rendering.md](./architecture/rendering.md) — box tree, layout, painting
 * [browser.md](./architecture/browser.md) — pages, tabs, history
-* [javascript.md](./architecture/javascript.md) — the engine seam, and why it is empty
+* [javascript.md](./architecture/javascript.md) — the engine, the DOM bindings and script ordering
 * [security.md](./architecture/security.md) — what is enforced, and what is missing
 * [storage.md](./architecture/storage.md) — history and bookmarks today
 * [testing.md](./architecture/testing.md) — the suites and what they catch

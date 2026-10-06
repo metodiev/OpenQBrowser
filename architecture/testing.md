@@ -1,12 +1,12 @@
 # Testing
 
 OpenQBrowser has three test suites — unit, integration and browser — containing
-eight QTest-based targets, all registered with CTest from `tests/CMakeLists.txt`:
+eleven QTest-based targets, all registered with CTest from `tests/CMakeLists.txt`:
 
 | Suite | Directory | Targets | Contents |
 | --- | --- | --- | --- |
-| Unit | `tests/unit/` | `tst_url`, `tst_html`, `tst_css`, `tst_layout` | One component each, in isolation. |
-| Integration | `tests/integration/` | `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf` | Several components together, including real loopback HTTP. |
+| Unit | `tests/unit/` | `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript` | One component each, in isolation; `tst_javascript` runs real scripts against a real parsed document. |
+| Integration | `tests/integration/` | `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting` | Several components together, including real loopback HTTP; `tst_scripting` drives scripted pages through the load pipeline. |
 | Browser | `tests/browser/` | `tst_browser` | The window, its tabs and user-level navigation. |
 
 Every target links `oqb_core` (and `tst_browser` additionally links `oqb_ui` and
