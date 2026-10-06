@@ -8,10 +8,10 @@ inheritance and presentational hints.
 | File | Contents |
 | --- | --- |
 | `src/css/Tokenizer.h`, `Tokenizer.cpp` | `css::Token`, `css::TokenType`, `css::Tokenizer`. |
-| `src/css/Value.h`, `Value.cpp` | `css::Value`, `values::parseColor()`, `values::lengthToPixels()`. |
-| `src/css/Colors.cpp` | The named-colour table and `rgb()`/`hsl()` parsing. |
+| `src/css/Value.h`, `Value.cpp` | `css::Value`, `values::parseColor()`, `values::lengthToPixels()`, `values::parseComponentValue()`, the named-colour table and `rgb()`/`hsl()` parsing. |
 | `src/css/Selector.h`, `Selector.cpp` | `CompoundSelector`, `Selector`, `SelectorParser`, `matchesNth()`. |
 | `src/css/Stylesheet.h`, `Stylesheet.cpp` | `Declaration`, `StyleRule`, `AtRule`, `Stylesheet`, `MediaQuery`. |
+| `src/css/Grid.h`, `Grid.cpp` | `GridTrack`, `GridTrackList`, `parseTrackList()`, `GridPlacement`, `parsePlacement()`, `resolveTrackSizes()`. |
 | `src/css/Style.h`, `Cascade.cpp` | `ComputedStyle`, `LengthOrAuto`, `EdgeSizes`, `StyleContext`, `StyleEngine`. |
 
 ## The tokenizer

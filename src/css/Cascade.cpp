@@ -165,42 +165,12 @@ QList<QString> splitBoxValues(const QString &raw)
     return out;
 }
 
-/// Parses a standalone length text such as "4px" for shorthand expansion.
-///
-/// Lengths keep their unit so that percentage and em values can be resolved
-/// later against the element's own font size and containing block, which is what
-/// makes "margin: 2em" and "width: 50%" correct.
+/// Shorthand expansion reads values one component at a time. The parser itself
+/// lives in Value.cpp because the grid track parser needs exactly the same rules,
+/// and two implementations of "what is a length" would drift.
 Value parseSingleValue(const QString &text)
 {
-    css::Tokenizer tokenizer(text);
-    QList<Token> tokens;
-    while (true) {
-        const Token token = tokenizer.nextToken();
-        if (token.type == TokenType::EndOfFile)
-            break;
-        tokens.append(token);
-    }
-    if (tokens.isEmpty())
-        return Value::invalid();
-
-    const Token &token = tokens.first();
-    switch (token.type) {
-    case TokenType::Ident:
-        if (QColor color; values::colorFromKeyword(token.value, &color))
-            return Value::fromColor(color, token.text);
-        return Value::fromKeyword(token.value);
-    case TokenType::Dimension:
-        // Not resolved here: the caller applies its own font size.
-        return Value::fromLength(token.number, token.unit, token.text);
-    case TokenType::Percentage:
-        return Value::fromPercentage(token.number, token.text);
-    case TokenType::Number:
-        return Value::fromNumber(token.number, token.text);
-    case TokenType::Hash:
-        return values::parseColor(token.text);
-    default:
-        return Value::invalid();
-    }
+    return values::parseComponentValue(text);
 }
 
 /// Folds every presentational hint of an element into (property, raw value)
@@ -604,15 +574,162 @@ void StyleEngine::applyDeclaration(ComputedStyle *style, const Declaration &decl
             QStringLiteral("table-row-group"), QStringLiteral("table-header-group"),
             QStringLiteral("table-footer-group"), QStringLiteral("table-caption"),
             QStringLiteral("table-column"), QStringLiteral("table-column-group"),
-            QStringLiteral("flex"),
+            QStringLiteral("flex"),          QStringLiteral("grid"),
+            QStringLiteral("inline-grid"),
         };
+        // An inline-level container is laid out exactly like its block-level
+        // counterpart; only how the box itself is placed in its parent differs.
+        // The two are normalised so the layout engine has one form to handle.
         if (value.isKeyword(QStringLiteral("inline-flex")))
             style->display = QStringLiteral("flex");
+        else if (value.isKeyword(QStringLiteral("inline-grid")))
+            style->display = QStringLiteral("grid");
         else if (kKnown.contains(value.keyword))
             style->display = value.keyword;
         else if (consumed)
             *consumed = false;
         style->isListItem = style->display == QLatin1String("list-item");
+        return;
+    }
+
+    // ------------------------------------------------------------------ grid
+    //
+    // The template lists are stored as text and parsed during layout, because a
+    // track size may be a percentage or a viewport unit whose base is only known
+    // once the grid has a containing block. The placement shorthands are parsed
+    // here, since they depend on nothing but their own text.
+
+    if (property == QLatin1String("grid-template-columns")
+        || property == QLatin1String("grid-template-rows")) {
+        const QString text = value.toString().trimmed();
+        // `none` is the initial value and means "no template", which is not the
+        // same as an empty list: items then go to the implicit grid.
+        const QString stored = text.compare(QLatin1String("none"), Qt::CaseInsensitive) == 0
+            ? QString()
+            : text;
+        if (property == QLatin1String("grid-template-columns"))
+            style->gridTemplateColumns = stored;
+        else
+            style->gridTemplateRows = stored;
+        return;
+    }
+
+    if (property == QLatin1String("grid-template")) {
+        // `grid-template` is the rows/columns shorthand: `"a" "b" 100px / 1fr`.
+        // Only the part after a slash is a track list this engine can use; the
+        // quoted line names that may precede it are skipped rather than
+        // misread as track sizes.
+        const QString text = value.toString();
+        const int slash = text.indexOf(u'/');
+        if (slash >= 0) {
+            style->gridTemplateRows = text.left(slash).trimmed();
+            style->gridTemplateColumns = text.mid(slash + 1).trimmed();
+        }
+        return;
+    }
+
+    if (property == QLatin1String("grid-auto-columns")
+        || property == QLatin1String("grid-auto-rows")) {
+        const QString text = value.toString().trimmed();
+        if (property == QLatin1String("grid-auto-columns"))
+            style->gridAutoColumns = text;
+        else
+            style->gridAutoRows = text;
+        return;
+    }
+
+    if (property == QLatin1String("grid-auto-flow")) {
+        static const QSet<QString> kValid = {
+            QStringLiteral("row"), QStringLiteral("column"), QStringLiteral("row dense"),
+            QStringLiteral("column dense")};
+        const QString text = value.toString().trimmed().toLower();
+        if (kValid.contains(text))
+            style->gridAutoFlow = text;
+        return;
+    }
+
+    if (property == QLatin1String("grid-column") || property == QLatin1String("grid-row")) {
+        const QString text = value.toString().trimmed();
+        if (property == QLatin1String("grid-column")) {
+            style->gridColumn = text;
+            style->gridColumnStart = parsePlacement(text);
+        } else {
+            style->gridRow = text;
+            style->gridRowStart = parsePlacement(text);
+        }
+        return;
+    }
+
+    if (property == QLatin1String("grid-area")) {
+        // The shorthand sets all four edges. The start of each axis is what
+        // placement needs; the end arrives as a span or a line on the same axis.
+        style->gridArea = value.toString().trimmed();
+        const QStringList parts = splitGridArea(style->gridArea);
+        style->gridRowStart = parsePlacement(parts.value(0) + QStringLiteral(" / ")
+                                            + parts.value(2));
+        style->gridColumnStart = parsePlacement(parts.value(1) + QStringLiteral(" / ")
+                                                + parts.value(3));
+        return;
+    }
+
+    if (property == QLatin1String("grid-column-start")
+        || property == QLatin1String("grid-column-end")
+        || property == QLatin1String("grid-row-start")
+        || property == QLatin1String("grid-row-end")) {
+        // A longhand overwrites the half of the shorthand it names. It is
+        // combined with whatever the other half already holds, because a
+        // stylesheet may set `grid-column` and then override one end.
+        const bool isColumn = property.startsWith(QLatin1String("grid-column"));
+        const bool isStart = property.endsWith(QLatin1String("start"));
+        const QString text = value.toString().trimmed();
+        const GridPlacement existing = isColumn ? style->gridColumnStart : style->gridRowStart;
+        const GridPlacement half = parsePlacement(text);
+
+        GridPlacement merged = existing;
+        if (isStart) {
+            merged.startLine = half.startLine;
+            merged.startSpan = half.startSpan;
+            merged.startName = half.startName;
+        } else {
+            merged.endLine = half.endLine;
+            merged.endSpan = half.endSpan;
+            merged.endName = half.endName;
+        }
+        if (isColumn)
+            style->gridColumnStart = merged;
+        else
+            style->gridRowStart = merged;
+        return;
+    }
+
+    // Alignment is shared with flexbox, and the two share the same fields, so
+    // only the grid-specific properties are handled here: `justify-items` and
+    // `justify-self` have no flex equivalent, while `align-items`, `align-self`,
+    // `justify-content` and `align-content` are already validated below.
+    //
+    // Grid layout accepts both spellings of the edge keywords - `start` and
+    // `flex-start` - because whichever the cascade stored, the intent is the
+    // same, and a shared field cannot be normalised for one context without
+    // changing the meaning for the other.
+
+    if (property == QLatin1String("justify-items")) {
+        static const QSet<QString> kValid = {
+            QStringLiteral("start"), QStringLiteral("end"), QStringLiteral("center"),
+            QStringLiteral("stretch"), QStringLiteral("flex-start"), QStringLiteral("flex-end")};
+        const QString keyword = keywordOr(QStringLiteral("stretch"));
+        if (kValid.contains(keyword))
+            style->justifyItems = keyword;
+        return;
+    }
+
+    if (property == QLatin1String("justify-self")) {
+        static const QSet<QString> kValid = {
+            QStringLiteral("auto"), QStringLiteral("start"), QStringLiteral("end"),
+            QStringLiteral("center"), QStringLiteral("stretch"),
+            QStringLiteral("flex-start"), QStringLiteral("flex-end")};
+        const QString keyword = keywordOr(QStringLiteral("auto"));
+        if (kValid.contains(keyword))
+            style->justifySelf = keyword;
         return;
     }
 

@@ -555,6 +555,40 @@ QString unquote(const QString &text)
     return trimmed;
 }
 
+
+Value parseComponentValue(const QString &text)
+{
+    Tokenizer tokenizer(text);
+    QList<Token> tokens;
+    while (true) {
+        const Token token = tokenizer.nextToken();
+        if (token.type == TokenType::EndOfFile)
+            break;
+        tokens.append(token);
+    }
+    if (tokens.isEmpty())
+        return Value::invalid();
+
+    const Token &token = tokens.first();
+    switch (token.type) {
+    case TokenType::Ident:
+        if (QColor color; values::colorFromKeyword(token.value, &color))
+            return Value::fromColor(color, token.text);
+        return Value::fromKeyword(token.value);
+    case TokenType::Dimension:
+        // Not resolved here: the caller applies its own font size.
+        return Value::fromLength(token.number, token.unit, token.text);
+    case TokenType::Percentage:
+        return Value::fromPercentage(token.number, token.text);
+    case TokenType::Number:
+        return Value::fromNumber(token.number, token.text);
+    case TokenType::Hash:
+        return values::parseColor(token.text);
+    default:
+        return Value::invalid();
+    }
+}
+
 } // namespace values
 
 } // namespace oqb::css

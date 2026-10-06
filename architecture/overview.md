@@ -74,7 +74,7 @@ parsed and re-run through the CSS and layout stages; see `browser.md`.
 | `src/network` | `network/Url.h`, `HttpMessage.h`, `HttpClient.h`, `Cache.h`, `ResourceLoader.h` | RFC 3986 URLs, HTTP/1.1 and HTTPS, redirects, encodings, conditional caching, resource cache. |
 | `src/dom` | `dom/Node.h`, `dom/Document.h` | Node tree with attributes and classes; document metadata. |
 | `src/html` | `html/Tokenizer.h`, `html/Parser.h`, `html/Entities.h` | Tokenizer, character references, tree construction. |
-| `src/css` | `css/Tokenizer.h`, `css/Selector.h`, `css/Value.h`, `css/Stylesheet.h`, `css/Style.h` | Tokenizer, value model, selectors, stylesheet parsing, media queries, cascade. |
+| `src/css` | `css/Tokenizer.h`, `css/Selector.h`, `css/Value.h`, `css/Stylesheet.h`, `css/Style.h`, `css/Grid.h` | Tokenizer, value model, selectors, stylesheet parsing, media queries, cascade, grid track and placement parsing. |
 | `src/renderer` | `renderer/BoxTree.h`, `Layout.h`, `Painter.h` | Box tree, layout, painting. |
 | `src/storage` | `storage/History.h`, `storage/Bookmarks.h`, `storage/Cookies.h` | History list with a cursor; bookmark list; a cookie jar with RFC 6265 rules. |
 | `src/security` | `security/SecurityPolicy.h` | Origin checks, subresource downgrade rules, permissions, transport security. |

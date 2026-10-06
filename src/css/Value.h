@@ -98,6 +98,19 @@ bool lengthToPixels(double amount, const QString &unit, double fontSize, double 
 /// The pixel size a CSS font-size keyword such as "medium" means.
 bool absoluteFontSizeKeyword(const QString &keyword, double *pixels);
 
+/// Parses one standalone component value, such as "4px" or "auto".
+///
+/// Lengths keep their unit: a percentage or an `em` cannot be reduced to pixels
+/// until layout runs and the containing block and font size are known, which is
+/// what makes `margin: 2em` and `width: 50%` correct. Only the first token is
+/// read, so this is for a value already known to be a single component - a
+/// shorthand's parts, or one item of a track list.
+///
+/// It lives in `values` alongside the other parsing and resolution helpers,
+/// because both the cascade's shorthand expansion and the grid track parser need
+/// exactly these rules and two copies of "what is a length" would drift.
+Value parseComponentValue(const QString &text);
+
 /// Converts the font-size keywords "larger" and "smaller" relative to `parent`.
 double relativeFontSizeKeyword(const QString &keyword, double parent, bool *recognised);
 

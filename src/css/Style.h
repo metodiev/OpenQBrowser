@@ -7,6 +7,7 @@
 #include <QString>
 #include <QStringList>
 
+#include "css/Grid.h"
 #include "css/Stylesheet.h"
 #include "css/Value.h"
 
@@ -108,6 +109,14 @@ struct ComputedStyle
     // cascade produced.
     bool isFlexContainer() const { return display == QLatin1String("flex"); }
 
+    /// True for a grid container. An inline-grid is laid out exactly like a grid
+    /// but is inline-level, so the two differ only in how the box is placed in
+    /// its parent - not in how its own children are arranged.
+    bool isGridContainer() const
+    {
+        return display == QLatin1String("grid") || display == QLatin1String("inline-grid");
+    }
+
     /// "row", "row-reverse", "column" or "column-reverse".
     QString flexDirection = QStringLiteral("row");
     /// "nowrap", "wrap" or "wrap-reverse".
@@ -138,6 +147,40 @@ struct ComputedStyle
     /// True when `flex-basis` was set explicitly, which decides whether the
     /// item's width or its basis is the starting size.
     bool hasFlexBasis = false;
+
+    // ------------------------------------------------------ grid container
+    //
+    // The template lists are kept as text and parsed by `css::parseTrackList()`
+    // at layout time rather than here, because a track size may be a percentage
+    // or a viewport unit whose base is not known until the grid has a containing
+    // block. Parsing them here would freeze the wrong answer.
+    QString gridTemplateColumns;
+    QString gridTemplateRows;
+    /// The size of a track the template did not define, for items placed outside
+    /// it (`grid-auto-rows` and `-columns`).
+    QString gridAutoColumns;
+    QString gridAutoRows;
+    /// `grid-auto-flow`: "row", "column", or either plus "dense".
+    QString gridAutoFlow = QStringLiteral("row");
+    /// How items are aligned inside their cells. `justify-items` is the inline
+    /// axis and `align-items` the block axis, which for a grid means columns and
+    /// rows. `align-items`, `justify-content` and `align-content` are shared with
+    /// flexbox and are declared with the flex properties above.
+    QString justifyItems = QStringLiteral("stretch");
+
+    // -------------------------------------------------------- grid item
+    //
+    // `grid-column` and `grid-row` are the shorthands for
+    // `<start> / <end>`; `grid-area` sets all four at once. The raw text is kept
+    // so the inspector prints what the author wrote.
+    QString gridColumn;
+    QString gridRow;
+    QString gridArea;
+    /// The resolved placement of this item, parsed from the three above.
+    GridPlacement gridColumnStart;
+    GridPlacement gridRowStart;
+    /// `justify-self` for the inline axis. `align-self` is shared with flexbox.
+    QString justifySelf = QStringLiteral("auto");
 
     /// Width and height keep a percentage or auto until layout resolves them.
     LengthOrAuto width;
@@ -243,6 +286,7 @@ struct ComputedStyle
     {
         return display == QLatin1String("block") || display == QLatin1String("list-item")
             || display == QLatin1String("table") || display == QLatin1String("flex")
+            || display == QLatin1String("grid") || display == QLatin1String("inline-grid")
             || display == QLatin1String("table-row") || display == QLatin1String("table-row-group")
             || display == QLatin1String("table-header-group")
             || display == QLatin1String("table-footer-group") || display == QLatin1String("table-caption");

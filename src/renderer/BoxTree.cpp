@@ -338,7 +338,10 @@ std::unique_ptr<Box> BoxTreeBuilder::buildForNode(dom::Node *node,
         // each one has to be an item in its own right. Wrapping them in an
         // anonymous block would make the whole run a single item, which is why
         // `justify-content` had nothing to distribute between.
-        const bool flexContainer = style->isFlexContainer();
+        // A grid container is the same: its children are grid items, and wrapping
+        // them in an anonymous block would make the whole run one item that
+        // occupies a single cell.
+        const bool flexContainer = style->isFlexContainer() || style->isGridContainer();
         if (!flexContainer && (type == Box::Type::Block || type == Box::Type::InlineBlock)) {
             auto anonymous = std::make_unique<Box>(Box::Type::Anonymous, nullptr, style);
             for (auto &child : inlineRun)

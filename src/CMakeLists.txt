@@ -64,11 +64,11 @@ add_library(oqb_core STATIC
     html/Tokenizer.cpp
     html/Parser.cpp
     css/Tokenizer.cpp
-    css/Colors.cpp
     css/Selector.cpp
     css/Value.cpp
     css/Stylesheet.cpp
     css/Cascade.cpp
+    css/Grid.cpp
     renderer/BoxTree.cpp
     renderer/Layout.cpp
     renderer/Painter.cpp

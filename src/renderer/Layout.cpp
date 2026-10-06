@@ -1731,6 +1731,563 @@ void LayoutEngine::placeFloat(Box *box, const Context &context, double y)
     context.floats->bands.push_back(band);
 }
 
+// ---------------------------------------------------------------------- grid
+//
+// Grid layout has three phases that cannot be interleaved:
+//
+//   1. Place the items, so it is known how many tracks the grid has. An item
+//      can widen the grid beyond its template, which is why this comes first.
+//   2. Size the tracks, which needs every item's measured contribution.
+//   3. Lay each item out into the cell it occupies.
+//
+// Doing them in another order does not merely reorder work: sizing before
+// placing leaves no column for an item at an implicit track, and placing before
+// measuring sizes a track against content that has not been laid out.
+
+double LayoutEngine::widestWordWidth(Box *box, const Context &context) const
+{
+    // The min-content width is the widest thing that cannot be broken. For text
+    // that is the widest word; for everything else it is the box's own width.
+    double widest = 0;
+    bool measuredText = false;
+
+    std::function<void(const Box *)> walk = [&](const Box *node) {
+        if (!node)
+            return;
+        if (node->isText()) {
+            const css::ComputedStyle *style = node->style() ? node->style() : box->style();
+            const QFontMetricsF metrics(fontFor(style));
+            for (const QString &word : node->text().split(u' ', Qt::SkipEmptyParts)) {
+                measuredText = true;
+                widest = qMax(widest, metrics.horizontalAdvance(word));
+            }
+            return;
+        }
+        if (node->isReplaced() || node->type() == Box::Type::InlineBlock) {
+            measuredText = true;
+            widest = qMax(widest, node->borderBox().width());
+            return;
+        }
+        for (const auto &child : node->children())
+            walk(child.get());
+    };
+    walk(box);
+
+    // A box with no text is only as narrow as its padding and border allow.
+    const css::ComputedStyle *style = box->style();
+    if (style) {
+        widest += style->paddingLeft.resolve(context.availableWidth)
+            + style->paddingRight.resolve(context.availableWidth) + style->borderLeftWidth
+            + style->borderRightWidth;
+    }
+    Q_UNUSED(measuredText);
+    return widest;
+}
+
+double LayoutEngine::layoutGridChildren(Box *box, const Context &context)
+{
+    const css::ComputedStyle *containerStyle = box->style();
+    if (!containerStyle)
+        return 0;
+
+    const double columnGap = containerStyle->columnGap.isAuto()
+        ? 0
+        : containerStyle->columnGap.resolve(context.availableWidth);
+    const double rowGap
+        = containerStyle->rowGap.isAuto() ? 0 : containerStyle->rowGap.resolve(context.availableWidth);
+
+    // ------------------------------------------------------------- templates
+    //
+    // The track lists are parsed here rather than in the cascade because a
+    // percentage or a viewport unit needs the containing block, which only
+    // exists now.
+    css::GridTrackList columnTemplate;
+    css::GridTrackList rowTemplate;
+    if (!containerStyle->gridTemplateColumns.isEmpty()) {
+        css::parseTrackList(containerStyle->gridTemplateColumns, containerStyle->fontSize, 16,
+                            context.availableWidth, &columnTemplate);
+    }
+    if (!containerStyle->gridTemplateRows.isEmpty()) {
+        css::parseTrackList(containerStyle->gridTemplateRows, containerStyle->fontSize, 16,
+                            context.availableWidth, &rowTemplate);
+    }
+
+    // ------------------------------------------------ collect and place items
+    std::vector<GridItem> items;
+    for (const auto &childPtr : box->children()) {
+        Box *child = childPtr.get();
+        const css::ComputedStyle *childStyle = child->style();
+        if (!childStyle || !childStyle->generatesBox())
+            continue;
+        // An out-of-flow child is positioned against its containing block after
+        // normal flow, and a float has no meaning inside a grid.
+        if (child->isOutOfFlow() || childStyle->isFloating())
+            continue;
+
+        GridItem item;
+        item.box = child;
+        item.style = childStyle;
+        items.push_back(item);
+    }
+
+    if (items.empty())
+        return 0;
+
+    // A negative line counts back from the end of the *explicit* grid, so the
+    // line count is needed before a placement can be resolved. -1 is the last
+    // line, which is one past the last track.
+    const int explicitColumns = qMax(1, columnTemplate.size());
+    const int explicitRows = qMax(1, rowTemplate.size());
+
+    const auto resolveLine = [](int line, int explicitCount) {
+        // A line of n refers to the n-th grid line; -n counts back from the end.
+        // Both are converted to a zero-based track index.
+        if (line > 0)
+            return line - 1;
+        if (line < 0)
+            return explicitCount + line;
+        return -1; // auto
+    };
+
+    const auto namedLine = [](const css::GridTrackList &list, const QString &name, int *line) {
+        if (name.isEmpty() || !list.lineNames.contains(name))
+            return false;
+        const QList<int> &lines = list.lineNames.value(name);
+        if (lines.isEmpty())
+            return false;
+        // The first line with that name, which is what `grid-column: left` means
+        // when a name appears once.
+        *line = lines.first();
+        return true;
+    };
+
+    // Pass 1: resolve the placements that were given explicitly, and give an
+    // item with two explicit lines the span between them. This runs before
+    // auto-placement so the cursor knows which cells are taken.
+    int columnCount = explicitColumns;
+    int rowCount = explicitRows;
+
+    for (GridItem &item : items) {
+        const css::GridPlacement &columns = item.style->gridColumnStart;
+        const css::GridPlacement &rows = item.style->gridRowStart;
+
+        // Columns.
+        int start = -1;
+        int end = -1;
+        if (int named = 0; namedLine(columnTemplate, columns.startName, &named))
+            start = named - 1;
+        else if (columns.startLine != 0)
+            start = resolveLine(columns.startLine, explicitColumns);
+        if (int named = 0; namedLine(columnTemplate, columns.endName, &named))
+            end = named - 1;
+        else if (columns.endLine != 0)
+            end = resolveLine(columns.endLine, explicitColumns);
+
+        if (start >= 0) {
+            if (end >= 0)
+                end = qMax(end, start + 1);
+            else if (columns.endSpan > 0)
+                end = start + columns.endSpan;
+            else if (columns.startSpan > 0)
+                end = start + columns.startSpan;
+            else
+                end = start + 1;
+        } else if (end >= 0) {
+            start = columns.startSpan > 0 ? end - columns.startSpan : end - 1;
+            start = qMax(0, start);
+        }
+
+        item.columnStart = start;
+        item.columnEnd = end;
+
+        // Rows.
+        int rowStartIndex = -1;
+        int rowEndIndex = -1;
+        if (int named = 0; namedLine(rowTemplate, rows.startName, &named))
+            rowStartIndex = named - 1;
+        else if (rows.startLine != 0)
+            rowStartIndex = resolveLine(rows.startLine, explicitRows);
+        if (int named = 0; namedLine(rowTemplate, rows.endName, &named))
+            rowEndIndex = named - 1;
+        else if (rows.endLine != 0)
+            rowEndIndex = resolveLine(rows.endLine, explicitRows);
+
+        if (rowStartIndex >= 0) {
+            if (rowEndIndex >= 0)
+                rowEndIndex = qMax(rowEndIndex, rowStartIndex + 1);
+            else if (rows.endSpan > 0)
+                rowEndIndex = rowStartIndex + rows.endSpan;
+            else if (rows.startSpan > 0)
+                rowEndIndex = rowStartIndex + rows.startSpan;
+            else
+                rowEndIndex = rowStartIndex + 1;
+        } else if (rowEndIndex >= 0) {
+            rowStartIndex = rows.startSpan > 0 ? rowEndIndex - rows.startSpan : rowEndIndex - 1;
+            rowStartIndex = qMax(0, rowStartIndex);
+        }
+
+        item.rowStart = rowStartIndex;
+        item.rowEnd = rowEndIndex;
+    }
+
+    // Pass 2: auto-place everything still unplaced, with a cursor that walks the
+    // grid in the flow direction.
+    //
+    // The cursor must *wrap*: in row flow, once it passes the last column it
+    // returns to the first column of the next row. Without the wrap an item with
+    // an auto position always finds the next free cell to the right, so a grid
+    // with two columns puts the third item in an implicit third column instead
+    // of starting a second row - which is the difference between a two-column
+    // grid and a single row that never ends.
+    const bool columnFlow = containerStyle->gridAutoFlow.startsWith(QLatin1String("column"));
+
+    // How far the cursor goes before it wraps. Row flow is bounded by the
+    // template's column count, or by one column when there is no template, which
+    // is what makes `display: grid` with no template a single-column grid.
+    const int columnWrap = columnFlow ? 1 : qMax(1, explicitColumns);
+    const int rowWrap = columnFlow ? qMax(1, explicitRows) : 1;
+
+    {
+        int cursorColumn = 0;
+        int cursorRow = 0;
+
+        const auto advance = [&] {
+            if (columnFlow) {
+                ++cursorRow;
+                if (cursorRow >= rowWrap) {
+                    cursorRow = 0;
+                    ++cursorColumn;
+                }
+            } else {
+                ++cursorColumn;
+                if (cursorColumn >= columnWrap) {
+                    cursorColumn = 0;
+                    ++cursorRow;
+                }
+            }
+        };
+
+        for (GridItem &item : items) {
+            const bool columnAuto = item.columnStart < 0;
+            const bool rowAuto = item.rowStart < 0;
+            if (!columnAuto && !rowAuto)
+                continue;
+
+            const int columnSpan = columnAuto ? qMax(1, item.columnEnd - item.columnStart) : 1;
+            const int rowSpan = rowAuto ? qMax(1, item.rowEnd - item.rowStart) : 1;
+
+            // An item with a definite column starts its search in that column,
+            // which is what puts a sidebar item back in the sidebar rather than
+            // wherever the cursor happens to be.
+            if (!columnAuto)
+                cursorColumn = item.columnStart;
+            if (!rowAuto)
+                cursorRow = item.rowStart;
+
+            bool placed = false;
+            // The bound is generous: a grid larger than this is pathological, and
+            // running forever on a page that asks for one is worse than placing
+            // the item anyway.
+            for (int guard = 0; guard < 4096 && !placed; ++guard) {
+                const int col = columnAuto ? cursorColumn : item.columnStart;
+                const int row = rowAuto ? cursorRow : item.rowStart;
+
+                bool collides = false;
+                for (const GridItem &other : items) {
+                    if (&other == &item || other.columnStart < 0 || other.rowStart < 0)
+                        continue;
+                    const bool overlapsColumns
+                        = col < other.columnEnd && col + columnSpan > other.columnStart;
+                    const bool overlapsRows
+                        = row < other.rowEnd && row + rowSpan > other.rowStart;
+                    if (overlapsColumns && overlapsRows) {
+                        collides = true;
+                        break;
+                    }
+                }
+
+                if (!collides) {
+                    if (columnAuto)
+                        item.columnEnd = col + columnSpan;
+                    if (rowAuto)
+                        item.rowEnd = row + rowSpan;
+                    item.columnStart = col;
+                    item.rowStart = row;
+                    placed = true;
+                    break;
+                }
+                advance();
+            }
+
+            if (!placed) {
+                // The search gave up. The item is placed at the cursor anyway so
+                // that it is visible rather than silently dropped.
+                item.columnStart = cursorColumn;
+                item.rowStart = cursorRow;
+                item.columnEnd = cursorColumn + columnSpan;
+                item.rowEnd = cursorRow + rowSpan;
+            }
+
+            // The cursor steps past the item just placed, so the next one begins
+            // where this one ended rather than on top of it.
+            if (columnFlow)
+                cursorRow = item.rowEnd;
+            else
+                cursorColumn = item.columnEnd;
+
+            // A placement that lands exactly on the wrap boundary has to wrap
+            // now, or the next item would start one column past the grid.
+            if (columnFlow) {
+                if (cursorRow >= rowWrap) {
+                    cursorRow = 0;
+                    ++cursorColumn;
+                }
+            } else if (cursorColumn >= columnWrap) {
+                cursorColumn = 0;
+                ++cursorRow;
+            }
+        }
+    }
+
+    // The grid grows to fit whatever the items needed, which is what makes
+    // `grid-auto-rows` meaningful.
+    for (const GridItem &item : items) {
+        columnCount = qMax(columnCount, item.columnEnd);
+        rowCount = qMax(rowCount, item.rowEnd);
+    }
+    if (columnCount <= 0)
+        columnCount = 1;
+    if (rowCount <= 0)
+        rowCount = 1;
+
+    // --------------------------------------------------- measure contributions
+    //
+    // Each item's intrinsic size feeds the tracks it spans. A spanning item
+    // contributes its width and height to every track it crosses, which is an
+    // approximation of the specification's distribution rule - it over-counts a
+    // spanning item - but it keeps a multi-column card as wide as its content
+    // instead of collapsing it.
+    Context measuring = context;
+    measuring.floats = nullptr;
+    measuring.contentX = 0;
+
+    for (GridItem &item : items) {
+        measuring.availableWidth = qMax(0.0, context.availableWidth);
+
+        // A specified width or height is what the item wants, and a shrink-to-fit
+        // measures what it would take with the room available.
+        const bool widthAuto = item.style->width.isAuto();
+        const double paddingAndBorder = item.style->paddingLeft.resolve(0)
+            + item.style->paddingRight.resolve(0) + item.style->borderLeftWidth
+            + item.style->borderRightWidth;
+        const double heightPaddingAndBorder = item.style->paddingTop.resolve(0)
+            + item.style->paddingBottom.resolve(0) + item.style->borderTopWidth
+            + item.style->borderBottomWidth;
+
+        item.maxWidth = widthAuto ? shrinkToFitWidth(item.box, measuring)
+                                  : resolveUsedWidth(item.box, context.availableWidth, nullptr)
+                + paddingAndBorder;
+        // The minimum is where a line could break if it had to: for text that is
+        // the widest word, which the font metrics give.
+        item.minWidth = widthAuto ? qMin(item.maxWidth, widestWordWidth(item.box, measuring))
+                                  : item.maxWidth;
+
+        // An item's height cannot be known without laying it out, so it is laid
+        // out here, at the width this pass measured. The geometry is overwritten
+        // by the placement pass below; what matters is the height it reports,
+        // which is what sizes an `auto` row. Reading `box->height()` before this
+        // ran was the bug that made every auto row zero-height, stacking the rows
+        // on top of one another.
+        Context probe = measuring;
+        probe.contentX = 0;
+        probe.contentY = 0;
+        probe.availableWidth = qMax(0.0, item.maxWidth);
+        probe.floats = nullptr;
+        probe.depth = context.depth + 1;
+        layoutBlock(item.box, probe, 0);
+
+        const double specifiedHeight = resolveUsedHeight(item.box, measuring);
+        item.maxHeight = specifiedHeight >= 0 ? specifiedHeight + heightPaddingAndBorder
+                                              : item.box->height();
+        item.minHeight = specifiedHeight >= 0 ? item.maxHeight : 0;
+    }
+
+    for (GridItem &item : items) {
+        for (int column = item.columnStart; column < item.columnEnd && column < columnCount;
+             ++column) {
+            while (columnTemplate.tracks.size() <= column) {
+                css::GridTrack track;
+                track.kind = css::GridTrack::Kind::Auto;
+                columnTemplate.tracks.append(track);
+            }
+            css::GridTrack &track = columnTemplate.tracks[column];
+            track.contentMin = qMax(track.contentMin, item.minWidth);
+            track.contentMax = qMax(track.contentMax, item.maxWidth);
+        }
+        for (int row = item.rowStart; row < item.rowEnd && row < rowCount; ++row) {
+            while (rowTemplate.tracks.size() <= row) {
+                css::GridTrack track;
+                track.kind = css::GridTrack::Kind::Auto;
+                rowTemplate.tracks.append(track);
+            }
+            css::GridTrack &track = rowTemplate.tracks[row];
+            track.contentMin = qMax(track.contentMin, item.minHeight);
+            track.contentMax = qMax(track.contentMax, item.maxHeight);
+        }
+    }
+
+    // ------------------------------------------------------------- size tracks
+    css::resolveTrackSizes(&columnTemplate.tracks, context.availableWidth, columnGap);
+
+    // Rows are sized differently from columns, and the difference is not an
+    // optimisation: a grid usually has no definite height, and then every row is
+    // sized by its content and the container grows to hold them. Distributing an
+    // invented "available height" across the rows instead - which is what
+    // feeding `contentMax * rowCount` into the column algorithm does - shrinks
+    // every row below its own content, so a two-row grid comes out with rows of
+    // 14px holding 19px of text.
+    //
+    // A flexible row in an indefinite container is also content-sized, which is
+    // what `1fr` means for a row in a grid that is only as tall as its content.
+    if (context.availableHeight >= 0) {
+        css::resolveTrackSizes(&rowTemplate.tracks, context.availableHeight, rowGap);
+    } else {
+        for (css::GridTrack &track : rowTemplate.tracks) {
+            switch (track.kind) {
+            case css::GridTrack::Kind::Fixed:
+                track.size = qMax(0.0, track.value);
+                break;
+            case css::GridTrack::Kind::MinContent:
+                track.size = qMax(0.0, track.contentMin);
+                break;
+            case css::GridTrack::Kind::FitContent:
+                track.size = qMin(qMax(0.0, track.value), qMax(0.0, track.contentMax));
+                break;
+            case css::GridTrack::Kind::Auto:
+            case css::GridTrack::Kind::MaxContent:
+            case css::GridTrack::Kind::Fraction:
+                // Content-sized: a row is as tall as the tallest item in it.
+                track.size = qMax(0.0, track.contentMax);
+                break;
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- place items
+    std::vector<double> columnOffsets(columnTemplate.tracks.size() + 1, 0);
+    for (int i = 0; i < columnTemplate.tracks.size(); ++i)
+        columnOffsets[i + 1] = columnOffsets[i] + columnTemplate.tracks.at(i).size + columnGap;
+
+    std::vector<double> rowOffsets(rowTemplate.tracks.size() + 1, 0);
+    for (int i = 0; i < rowTemplate.tracks.size(); ++i)
+        rowOffsets[i + 1] = rowOffsets[i] + rowTemplate.tracks.at(i).size + rowGap;
+
+    const double gridWidth = columnTemplate.tracks.isEmpty()
+        ? 0
+        : columnOffsets[columnTemplate.tracks.size()] - columnGap;
+    const double gridHeight
+        = rowTemplate.tracks.isEmpty() ? 0 : rowOffsets[rowTemplate.tracks.size()] - rowGap;
+
+    // The whole track set is distributed when it is smaller than the container,
+    // which is what `justify-content: center` means for a grid.
+    double originX = context.contentX;
+    const QString &justify = containerStyle->justifyContent;
+    if (gridWidth < context.availableWidth) {
+        const double free = context.availableWidth - gridWidth;
+        if (justify == QLatin1String("center"))
+            originX += free / 2;
+        else if (justify == QLatin1String("flex-end") || justify == QLatin1String("end"))
+            originX += free;
+    }
+
+    double originY = context.contentY;
+    const QString &alignContent = containerStyle->alignContent;
+    if (context.availableHeight >= 0 && gridHeight < context.availableHeight) {
+        const double free = context.availableHeight - gridHeight;
+        if (alignContent == QLatin1String("center"))
+            originY += free / 2;
+        else if (alignContent == QLatin1String("flex-end") || alignContent == QLatin1String("end"))
+            originY += free;
+    }
+
+    const auto resolveAlign = [](const QString &value, const QString &fallback) {
+        if (value.isEmpty() || value == QLatin1String("auto"))
+            return fallback;
+        return value;
+    };
+
+    double maxBottom = context.contentY;
+
+    for (GridItem &item : items) {
+        // The cell the item occupies, clamped to the tracks that exist.
+        const int columnStart = qBound(0, item.columnStart, qMax(0, columnCount - 1));
+        const int columnEnd = qBound(columnStart + 1, item.columnEnd, columnCount);
+        const int rowStartIndex = qBound(0, item.rowStart, qMax(0, rowCount - 1));
+        const int rowEndIndex = qBound(rowStartIndex + 1, item.rowEnd, rowCount);
+
+        const double cellX = originX + columnOffsets[columnStart];
+        const double cellY = originY + rowOffsets[rowStartIndex];
+        const double cellWidth = columnOffsets[columnEnd] - columnOffsets[columnStart]
+            - (columnEnd > columnStart ? columnGap : 0);
+        const double cellHeight = rowOffsets[rowEndIndex] - rowOffsets[rowStartIndex]
+            - (rowEndIndex > rowStartIndex ? rowGap : 0);
+
+        // The item is laid out with its cell as the containing block, so a
+        // percentage width resolves against the track rather than the grid.
+        Context cell = context;
+        cell.contentX = cellX;
+        cell.contentY = cellY;
+        cell.availableWidth = qMax(0.0, cellWidth);
+        cell.availableHeight = qMax(0.0, cellHeight);
+        cell.floats = nullptr;
+        cell.depth = context.depth + 1;
+
+        layoutBlock(item.box, cell, cellY);
+
+        // Alignment inside the cell. `stretch` is the default and the reason a
+        // grid item fills its track without any rule saying so.
+        const QString justifySelf
+            = resolveAlign(item.style->justifySelf, containerStyle->justifyItems);
+        const QString alignSelfValue
+            = resolveAlign(item.style->alignSelf, containerStyle->alignItems);
+
+        double x = cellX;
+        double y = cellY;
+        double width = item.box->width();
+        double height = item.box->height();
+
+        const bool stretchWidth = justifySelf == QLatin1String("stretch")
+            && item.style->width.isAuto();
+        if (stretchWidth)
+            width = cellWidth;
+        else if (justifySelf == QLatin1String("center"))
+            x += (cellWidth - width) / 2;
+        else if (justifySelf == QLatin1String("end") || justifySelf == QLatin1String("flex-end"))
+            x += cellWidth - width;
+
+        const bool stretchHeight = alignSelfValue == QLatin1String("stretch")
+            && item.style->height.isAuto() && context.availableHeight < 0;
+        // A row sized to its content is exactly the item's height, so stretching
+        // it vertically would only ever be a no-op. Stretching is therefore
+        // limited to the width, which is the case that matters in practice.
+        Q_UNUSED(stretchHeight);
+
+        if (alignSelfValue == QLatin1String("center"))
+            y += (cellHeight - height) / 2;
+        else if (alignSelfValue == QLatin1String("end")
+                 || alignSelfValue == QLatin1String("flex-end")) {
+            y += cellHeight - height;
+        }
+
+        item.box->setPosition(x, y);
+        item.box->setSize(width, height);
+        maxBottom = qMax(maxBottom, y + height);
+    }
+
+    return maxBottom - context.contentY;
+}
+
+
 double LayoutEngine::layoutBlock(Box *box, const Context &context, double borderTopY)
 {
     const css::ComputedStyle *style = box->style();
@@ -1809,7 +2366,7 @@ double LayoutEngine::layoutBlock(Box *box, const Context &context, double border
     // A box that does not establish one shares its parent's, which is why a
     // float in one paragraph still pushes the next paragraph's text aside.
     FloatContext ownFloats;
-    const bool establishesFlow = style->isFlexContainer()
+    const bool establishesFlow = style->isFlexContainer() || style->isGridContainer()
         || box->type() == Box::Type::InlineBlock
         || (style->overflow != QLatin1String("visible") && box->type() == Box::Type::Block);
 
@@ -1879,10 +2436,13 @@ double LayoutEngine::layoutBlock(Box *box, const Context &context, double border
                 hasBlockChild = true;
         }
 
-        // A flex container lays its children out along an axis instead of
-        // stacking them, so it takes neither the block nor the inline path.
+        // A flex or grid container lays its children out along its own rules
+        // instead of stacking them, so it takes neither the block nor the inline
+        // path.
         if (style->isFlexContainer())
             contentHeight = layoutFlexChildren(box, inner);
+        else if (style->isGridContainer())
+            contentHeight = layoutGridChildren(box, inner);
         else if (hasBlockChild)
             contentHeight = layoutBlockChildren(box, inner, &trailingMargin);
         else

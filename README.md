@@ -33,21 +33,20 @@ What works today:
 | HTML | Tokenizer and tree construction, including implied elements |
 | DOM | Element, text and comment nodes with attributes and classes |
 | CSS | Tokenizer, selectors with specificity, the cascade, media queries |
-| Rendering | Block, inline, flex and float layout, margin collapsing, box-sizing, painting, images |
+| Rendering | Block, inline, flex, float and grid layout, margin collapsing, box-sizing, painting, images |
 | Positioning | `relative`, `absolute`, `fixed` and `sticky`, with offsets and `z-index` |
 | JavaScript | QuickJS embedded: the DOM bindings, events and timers; inline, external, `defer` and `async` scripts |
 | Browser | Tabs, back/forward history, bookmarks, built-in `about:` pages |
 | Cookies | A cookie jar: `Set-Cookie` parsing, host and path scoping, expiry, `Secure`, `HttpOnly`, `SameSite` |
 | Caching | Conditional caching: `Cache-Control`, `Expires` and `Last-Modified` freshness, and `ETag` revalidation, so a stale resource costs a round trip and no body |
 | DevTools | Console that evaluates in the page, element tree with computed style and applied rules, element picker, layout, resource and cookie views |
-| Testing | Sixteen test suites, all passing |
+| Testing | Seventeen test suites, all passing |
 
 What does not work yet, and what you will observe:
 
 | Area | What happens |
 | --- | --- |
 | Modules, `fetch` | `<script type="module">` is skipped, and `fetch`/`XMLHttpRequest` are absent. See [architecture/javascript.md](./architecture/javascript.md). |
-| CSS grid | `display: grid` is recognised but laid out as ordinary blocks. Flexbox, positioning and floats all work. |
 | Forms | Rendered and styled, but nothing is submitted. |
 | Persistence | Cookies and cached responses work but are held in memory; nothing — cookies, cache, history or bookmarks — is stored between runs. |
 | Sandboxing | No process isolation or site isolation. |

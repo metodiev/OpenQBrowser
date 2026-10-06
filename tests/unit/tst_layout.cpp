@@ -129,6 +129,18 @@ private slots:
     void aFloatDoesNotAddHeightWithoutAFormattingContext();
     void anInlineBlockContainsItsFloats();
     void keepsAFloatInsideItsParent();
+
+    // Grid.
+    void laysOutGridColumns();
+    void distributesFractionalColumns();
+    void spansColumns();
+    void placesItemsByLineNumber();
+    void autoPlacesItemsIntoRows();
+    void appliesTheRowGap();
+    void sizesRowsToTheirContent();
+    void stretchesItemsToFillTheirCell();
+    void centresAnItemInItsCell();
+    void growsImplicitRowsForUnplacedItems();
 };
 
 void LayoutTest::buildsBoxesForElements()
@@ -1551,6 +1563,240 @@ void LayoutTest::keepsAFloatInsideItsParent()
     QVERIFY2(qFuzzyCompare(box->borderBox().right(), 400.0),
              qPrintable(QStringLiteral("expected the float's right edge at 400, got %1")
                             .arg(box->borderBox().right())));
+}
+
+// --------------------------------------------------------------------- grid
+//
+// Grid layout is three phases - place, size, lay out - and these tests pin the
+// observable result of all three: where a column starts, how wide a fractional
+// one is, which cell an item lands in, and whether a row is as tall as its
+// content. Every expected number is computed from the same arithmetic CSS
+// specifies rather than copied from a run, so a change that makes the engine
+// disagree with the specification fails here.
+
+namespace {
+
+/// The geometry of one element, for a readable assertion message.
+QString geometry(const renderer::Box *box)
+{
+    if (!box)
+        return QStringLiteral("<no box>");
+    return QStringLiteral("[%1, %2, %3 x %4]")
+        .arg(box->borderBox().x())
+        .arg(box->borderBox().y())
+        .arg(box->borderBox().width())
+        .arg(box->borderBox().height());
+}
+
+} // namespace
+
+void LayoutTest::laysOutGridColumns()
+{
+    // Three fixed columns with a gap. The columns must sit at the running sum of
+    // the widths and the gap, and the container must be as wide as the tracks.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: 100px 150px 50px; gap: 10px;
+                  width: 320px; }
+        </style>
+        <div id="grid"><div id="a"></div><div id="b"></div><div id="c"></div></div>)"));
+
+    QVERIFY2(page.boxForId(QStringLiteral("a")) != nullptr, "the grid produced no items");
+
+    // 100, then 100 + 10 + 150 = 260, then 260 + 10 + 50 = 320.
+    QCOMPARE(page.boxForId(QStringLiteral("a"))->borderBox().x(), 0.0);
+    QCOMPARE(page.boxForId(QStringLiteral("b"))->borderBox().x(), 110.0);
+    QCOMPARE(page.boxForId(QStringLiteral("c"))->borderBox().x(), 270.0);
+
+    QCOMPARE(page.boxForId(QStringLiteral("a"))->borderBox().width(), 100.0);
+    QCOMPARE(page.boxForId(QStringLiteral("b"))->borderBox().width(), 150.0);
+    QCOMPARE(page.boxForId(QStringLiteral("c"))->borderBox().width(), 50.0);
+
+    // All three are in row 1, so they share a top edge.
+    QCOMPARE(page.boxForId(QStringLiteral("b"))->borderBox().y(),
+             page.boxForId(QStringLiteral("a"))->borderBox().y());
+}
+
+void LayoutTest::distributesFractionalColumns()
+{
+    // `1fr 3fr` in 800px: the free space is divided by the factor sum, so the
+    // columns are 200 and 600. A naive equal split would give 400 each.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: 1fr 3fr; width: 800px; }
+        </style>
+        <div id="grid"><div id="a"></div><div id="b"></div></div>)"));
+
+    QCOMPARE(page.boxForId(QStringLiteral("a"))->borderBox().width(), 200.0);
+    QCOMPARE(page.boxForId(QStringLiteral("b"))->borderBox().width(), 600.0);
+    QCOMPARE(page.boxForId(QStringLiteral("b"))->borderBox().x(), 200.0);
+}
+
+void LayoutTest::spansColumns()
+{
+    // An item spanning lines 2 to 4 covers two tracks and the gap between them,
+    // which is the detail that makes a spanning item line up with the tracks it
+    // crosses rather than falling short by one gap.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: 100px 100px 100px; gap: 20px;
+                  width: 340px; }
+          #wide { grid-column: 2 / 4; }
+        </style>
+        <div id="grid"><div id="narrow"></div><div id="wide"></div></div>)"));
+
+    renderer::Box *wide = page.boxForId(QStringLiteral("wide"));
+    QVERIFY2(wide != nullptr, "the spanning item produced no box");
+
+    // Track 2 starts at 120, and tracks 2 and 3 plus the gap between them is
+    // 100 + 20 + 100 = 220.
+    QCOMPARE(wide->borderBox().x(), 120.0);
+    QCOMPARE(wide->borderBox().width(), 220.0);
+}
+
+void LayoutTest::placesItemsByLineNumber()
+{
+    // Explicit placement, including a negative line counted back from the end.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: 100px 100px; grid-template-rows: 30px 40px;
+                  width: 200px; }
+          #tl { grid-column: 1; grid-row: 1; }
+          #br { grid-column: 2; grid-row: 2; }
+          #last { grid-column: -1 / -2; grid-row: 1; }
+        </style>
+        <div id="grid"><div id="tl"></div><div id="br"></div><div id="last"></div></div>)"));
+
+    QCOMPARE(page.boxForId(QStringLiteral("tl"))->borderBox().x(), 0.0);
+    QCOMPARE(page.boxForId(QStringLiteral("tl"))->borderBox().y(), 0.0);
+
+    QCOMPARE(page.boxForId(QStringLiteral("br"))->borderBox().x(), 100.0);
+    QCOMPARE(page.boxForId(QStringLiteral("br"))->borderBox().y(), 30.0);
+
+    // -1 is the last line, so -1 / -2 places the item in the final column.
+    QVERIFY2(page.boxForId(QStringLiteral("last"))->borderBox().x() > 0.0,
+             qPrintable(geometry(page.boxForId(QStringLiteral("last")))));
+}
+
+void LayoutTest::autoPlacesItemsIntoRows()
+{
+    // With two columns, the third item wraps to the next row on its own. This is
+    // the auto-placement cursor doing its job, and it is what makes a grid of
+    // cards work without any item naming a cell.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: 100px 100px; width: 200px; }
+        </style>
+        <div id="grid"><div id="a"></div><div id="b"></div><div id="c"></div></div>)"));
+
+    QCOMPARE(page.boxForId(QStringLiteral("a"))->borderBox().x(), 0.0);
+    QCOMPARE(page.boxForId(QStringLiteral("b"))->borderBox().x(), 100.0);
+
+    // The third wraps to column 1 of row 2.
+    QCOMPARE(page.boxForId(QStringLiteral("c"))->borderBox().x(), 0.0);
+    QVERIFY2(page.boxForId(QStringLiteral("c"))->borderBox().y()
+                 > page.boxForId(QStringLiteral("a"))->borderBox().y(),
+             "the third item should wrap to a new row");
+}
+
+void LayoutTest::appliesTheRowGap()
+{
+    // Two rows of known height with a gap between them: the second row starts at
+    // the first row's height plus the gap. Getting this wrong stacks the rows
+    // with no space, or with one gap too many.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; font-size: 20px; }
+          #grid { display: grid; grid-template-columns: 100px; grid-template-rows: 30px 30px;
+                  row-gap: 12px; width: 100px; }
+        </style>
+        <div id="grid"><div id="a"></div><div id="b"></div></div>)"));
+
+    QCOMPARE(page.boxForId(QStringLiteral("a"))->borderBox().y(), 0.0);
+    QCOMPARE(page.boxForId(QStringLiteral("b"))->borderBox().y(), 42.0);
+}
+
+void LayoutTest::sizesRowsToTheirContent()
+{
+    // An auto row is as tall as its tallest item. Before this worked, rows were
+    // sized from an invented available height and came out shorter than their
+    // own text, so the rows overlapped.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; font-size: 16px; }
+          #grid { display: grid; grid-template-columns: 1fr; width: 400px; }
+          #tall { height: 60px; }
+        </style>
+        <div id="grid"><div id="tall"></div><div id="after"></div></div>)"));
+
+    // Row 1 is 60px because of the tall item, so the second row starts at 60.
+    QVERIFY2(page.boxForId(QStringLiteral("after"))->borderBox().y() >= 60.0,
+             qPrintable(geometry(page.boxForId(QStringLiteral("after")))));
+}
+
+void LayoutTest::stretchesItemsToFillTheirCell()
+{
+    // `stretch` is the initial value of align-items and justify-items, and it is
+    // why a grid item fills its track with no rule saying so. An item with no
+    // width of its own takes the whole column.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: 250px 150px; width: 400px; }
+        </style>
+        <div id="grid"><div id="a"></div><div id="b"></div></div>)"));
+
+    QCOMPARE(page.boxForId(QStringLiteral("a"))->borderBox().width(), 250.0);
+    QCOMPARE(page.boxForId(QStringLiteral("b"))->borderBox().width(), 150.0);
+}
+
+void LayoutTest::centresAnItemInItsCell()
+{
+    // `justify-self: center` on a 100px item in a 300px column: the item is
+    // offset by half the leftover, which is 100px.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: 300px; justify-items: center; width: 300px; }
+          #item { width: 100px; }
+        </style>
+        <div id="grid"><div id="item"></div></div>)"));
+
+    renderer::Box *item = page.boxForId(QStringLiteral("item"));
+    QVERIFY(item != nullptr);
+    QCOMPARE(item->borderBox().width(), 100.0);
+    QCOMPARE(item->borderBox().x(), 100.0);
+}
+
+void LayoutTest::growsImplicitRowsForUnplacedItems()
+{
+    // Items placed outside the template create implicit tracks, and the grid
+    // grows to hold them. Without this every extra item would be stacked in the
+    // last explicit row.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #grid { display: grid; grid-template-columns: 100px 100px; width: 200px; }
+        </style>
+        <div id="grid">
+          <div id="a"></div><div id="b"></div>
+          <div id="c"></div><div id="d"></div>
+          <div id="e"></div>
+        </div>)"));
+
+    // Five items in two columns occupy three rows, so the last item is on row 3.
+    renderer::Box *e = page.boxForId(QStringLiteral("e"));
+    QVERIFY(e != nullptr);
+
+    const double rowOne = page.boxForId(QStringLiteral("a"))->borderBox().y();
+    const double rowThree = e->borderBox().y();
+    QVERIFY2(rowThree > rowOne, qPrintable(geometry(e)));
+    QCOMPARE(e->borderBox().x(), 0.0);
 }
 
 QTEST_MAIN(LayoutTest)

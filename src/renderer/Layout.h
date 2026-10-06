@@ -172,6 +172,42 @@ private:
     /// placed. See architecture/rendering.md for the algorithm.
     double layoutFlexChildren(Box *box, const Context &context);
 
+    /// Lays out a grid container's children into its tracks and returns the
+    /// content height.
+    ///
+    /// The algorithm has three phases and they cannot be interleaved: every
+    /// item's contribution has to be measured before any track can be sized,
+    /// because a track's width is its content's, and every track has to be sized
+    /// before any item can be placed. See architecture/rendering.md.
+    double layoutGridChildren(Box *box, const Context &context);
+
+    /// The widest unbreakable word in `box`, which is its min-content width.
+    /// A grid track sized `min-content` or `auto` floors here rather than at
+    /// zero, because a narrower track would overflow with text.
+    double widestWordWidth(Box *box, const Context &context) const;
+
+    /// The height `box` takes at the width it is currently laid out at, with no
+    /// specified height to override it. Used to size an `auto` row.
+    double intrinsicHeight(Box *box, const Context &context) const;
+
+    /// One grid item, as the placement and sizing passes see it.
+    struct GridItem
+    {
+        Box *box = nullptr;
+        const css::ComputedStyle *style = nullptr;
+        /// The occupied cells, as zero-based track indices. `columnEnd` and
+        /// `rowEnd` are exclusive.
+        int columnStart = 0;
+        int columnEnd = 1;
+        int rowStart = 0;
+        int rowEnd = 1;
+        /// The measured contribution to its columns and rows.
+        double minWidth = 0;
+        double maxWidth = 0;
+        double minHeight = 0;
+        double maxHeight = 0;
+    };
+
     /// One flex item, as the sizing and placing passes see it.
     struct FlexItem
     {

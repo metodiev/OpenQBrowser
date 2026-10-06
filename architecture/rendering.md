@@ -233,7 +233,7 @@ implemented and documented below, so they are not listed here.
 | `vertical-align` | Lines are always baseline-aligned. |
 | `text-align` | A line always starts at the containing block's left content edge. |
 | `overflow` | Nothing clips; no scroll container is established inside a page. |
-| `display: grid` | Recognised but laid out as ordinary blocks. |
+| `display: grid` | **Implemented.** Track sizing (`fr`, `px`, `%`, `auto`, `min-content`, `max-content`, `fit-content()`, `minmax()`, `repeat()`), line, span and named placement, auto-placement, gaps and alignment. See the Grid section below. |
 | `display: table*` | Rows and cells stack as ordinary blocks at full width. |
 
 A reader should expect these features to have **no layout effect** rather than to
@@ -431,6 +431,123 @@ it until the stack ran out — visible only as a `SIGSEGV` in a crash report. Th
 second was the double placement described above, which showed up as floats landing
 at exactly one width too far right.
 
+## Grid
+
+Grid is the third layout mode, and unlike flexbox it is two-dimensional: there is
+no "main axis" that decides everything, so the algorithm sizes rows and columns
+independently and then places items into the resulting cells.
+
+The work is split across three places, and the split is deliberate:
+
+* `src/css/Grid.{h,cpp}` parses the template and the placements, and sizes the
+  tracks. This is arithmetic over strings and numbers, with no box tree and no
+  viewport, so it is tested directly in `tst_grid.cpp`.
+* `LayoutEngine::layoutGridChildren()` drives the three phases and owns the
+  geometry.
+* `ComputedStyle` holds the raw template text, because a track size may be a
+  percentage or a viewport unit whose base is not known until layout runs.
+
+### Why the template is parsed at layout time
+
+`grid-template-columns: 25% 1fr` cannot be resolved when the cascade runs: 25% is
+a percentage of the grid's own content width, which depends on the containing
+block. Storing the text and parsing it in `layoutGridChildren()` keeps that
+deferred, at the cost of re-parsing per layout — which is what the style arena
+already accepts for every other resolved value.
+
+### The three phases
+
+They cannot be interleaved, and each ordering mistake produces a specific,
+recognisable failure:
+
+1. **Place the items.** An item can widen the grid past its template, so the
+   track count is not known until every item has a cell. Placing after sizing
+   leaves no column for an item at an implicit track.
+2. **Size the tracks.** A track's width is its content's, so every item has to be
+   measured first. Measuring after sizing sizes a track against content that does
+   not exist yet.
+3. **Lay each item out** into its cell, then align it inside that cell.
+
+### Track sizing
+
+`resolveTrackSizes()` follows CSS Grid §12.7 and the order matters:
+
+* **Base sizes.** A definite track takes its length; an intrinsic one takes its
+  content minimum.
+* **Flexible distribution** (§12.7.1) — *before* auto tracks grow. The algorithm
+  is implemented as written, including the restart rule: a flexible track whose
+  floor exceeds its share is made inflexible and the rest are sized again without
+  it. Skipping that step gives `minmax(200px, 1fr)` less than 200px whenever an
+  equal share would have been smaller.
+* **Auto tracks grow** (§12.8) from whatever the flexible tracks left.
+
+Getting the last two the wrong way round is the single easiest mistake here. It
+lets an `auto` column swallow the space a `1fr` needed, so `200px auto 1fr` comes
+out with an oversized middle column and a starved flexible one.
+
+Two behaviours are deliberately *not* implemented, and both are asserted in
+`tst_grid.cpp` so they are choices rather than oversights:
+
+* **Definite tracks are never scaled down to fit.** Two 500px columns in a 400px
+  container overflow, exactly as a browser does. Shrinking them would silently
+  produce a layout the author did not ask for.
+* **A unitless zero is a length; any other bare number is not.** `minmax(0, 1fr)`
+  is the idiom that lets a column shrink below its content, and it depends on
+  that zero being a real floor rather than the "use the content minimum"
+  sentinel.
+
+### Rows are sized differently, and it is not an optimisation
+
+A grid usually has **no definite height**. Then every row is sized by its content
+and the container grows to hold them — a flexible row in an indefinite container
+is content-sized too.
+
+Feeding an invented available height into the column algorithm instead is a
+mistake that looks reasonable and is not: distributing `contentMax × rowCount`
+across the rows shrinks every row *below its own content*, so a two-row grid comes
+out with 14px rows holding 19px of text. That was a real bug here, and
+`appliesTheRowGap()` is the test that pins it.
+
+### Auto-placement wraps
+
+The cursor walks the grid in the flow direction and **wraps**: in row flow, once
+it passes the last column it returns to column 1 of the next row. Without the
+wrap an auto-positioned item always finds the next free cell to the right, so a
+two-column grid puts the third item in an implicit third column — a single row
+that never ends rather than a grid.
+
+An item with a definite column repositions the cursor to that column before its
+search, which is what keeps a sidebar item in the sidebar.
+
+### Containing and measuring
+
+A grid container establishes a block formatting context, so a float inside it
+cannot escape. The box tree also has to leave a grid container's children
+unwrapped: an anonymous block around an inline run would make the whole run a
+single item occupying one cell. Both are the same two changes flexbox needed.
+
+An item's height cannot be known without laying it out, so the measurement pass
+lays every item out at its column width and reads the resulting height. Reading
+`box->height()` before that had run was the bug that made every auto row
+zero-height.
+
+### Tests
+
+`tst_grid.cpp` (29 cases) covers the parser and the sizing arithmetic: every track
+kind, percentages against the available width, `minmax()` in both forms,
+`repeat()`, line names surviving a repetition, an unknown track being skipped
+without dropping the list, every placement form including spans and negative
+lines, and the `grid-area` shorthand's mirroring rule.
+
+`tst_layout.cpp` adds ten grid layout cases: fixed columns, fractional
+distribution, a spanning item, line-number and negative-line placement,
+auto-placement wrapping, the row gap, content-sized rows, stretch, centring, and
+implicit rows for extra items.
+
+Three mutations were used to check the harness earns its place — ignoring the flex
+factor, disabling the cursor wrap, and dropping the row gap each make the relevant
+tests fail.
+
 ## Positioning
 
 `position: relative`, `absolute`, `fixed` and `sticky` are implemented, along with
@@ -613,7 +730,7 @@ makes clicking text inside a link work.
 
 ## What a reader will notice
 
-* Grid and tables do not affect layout. Flexbox, positioning and floats do.
+* Tables do not affect layout. Flexbox, positioning, floats and grid do.
 * `documentWidth` is `max(viewportWidth, root right edge)`, so a page does not
   scroll horizontally unless a box overflows.
 * Text is measured with platform fonts, so a layout can differ by a pixel or two

@@ -1,11 +1,11 @@
 # Testing
 
 OpenQBrowser has three test suites — unit, integration and browser — containing
-sixteen QTest-based targets, all registered with CTest from `tests/CMakeLists.txt`:
+seventeen QTest-based targets, all registered with CTest from `tests/CMakeLists.txt`:
 
 | Suite | Directory | Targets | Contents |
 | --- | --- | --- | --- |
-| Unit | `tests/unit/` | `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript`, `tst_cookies`, `tst_cache` | One component each, in isolation; `tst_javascript` runs real scripts against a real parsed document. |
+| Unit | `tests/unit/` | `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript`, `tst_cookies`, `tst_cache`, `tst_grid` | One component each, in isolation; `tst_javascript` runs real scripts against a real parsed document. |
 | Integration | `tests/integration/` | `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting`, `tst_cookie_flow`, `tst_cache_flow` | Several components together, including real loopback HTTP; `tst_scripting` drives scripted pages through the load pipeline. |
 | Browser | `tests/browser/` | `tst_browser`, `tst_devtools` | The window, its tabs and user-level navigation, and the developer tools panel. |
 
@@ -19,7 +19,8 @@ than leaving to the caller.
 tests/
   CMakeLists.txt
   unit/          CMakeLists.txt, tst_url.cpp, tst_html.cpp, tst_css.cpp,
-                 tst_layout.cpp, tst_javascript.cpp, tst_cookies.cpp, tst_cache.cpp
+                 tst_layout.cpp, tst_javascript.cpp, tst_cookies.cpp, tst_cache.cpp,
+                 tst_grid.cpp
   integration/   CMakeLists.txt, tst_http.cpp, tst_pipeline.cpp,
                  tst_redirect.cpp, tst_perf.cpp, tst_scripting.cpp,
                  tst_cookie_flow.cpp, tst_cache_flow.cpp
@@ -117,6 +118,23 @@ headers combined; storability of errors, `206` and `304`; lifetime from
 its cap; `Vary` acceptance and refusal; age measured from the origin's `Date`;
 and all three HTTP date forms including an unparseable one, which must be invalid
 rather than the epoch.
+
+### `tests/unit/tst_grid.cpp`
+
+Covers `css::Grid` — the track-list parser, the placement parser and the sizing
+arithmetic — with no box tree and no viewport, because everything here is
+arithmetic over strings and numbers. That is what makes it possible to assert the
+*numbers*: `1fr + 3fr` in 800px is 200 and 600, not "the first is smaller than
+the second".
+
+Cases: every track kind, percentages against the available width, `fit-content()`,
+`minmax()` with both a flexible and a fixed range, `repeat()`, line names surviving
+a repetition, an unknown track being skipped without dropping the rest of the
+list, every placement form (single line, range, negative lines, spans, names,
+auto), the `grid-area` shorthand's mirroring rule, gap subtraction, fr
+distribution, `fr` beating `auto`, and the two deliberate non-behaviours —
+definite tracks overflowing rather than shrinking, and an `fr` track reaching its
+floor.
 
 ## Integration suite
 
