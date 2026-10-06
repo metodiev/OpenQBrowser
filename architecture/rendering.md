@@ -232,13 +232,94 @@ and never read by `src/renderer/`.
 | `position`, `top`/`right`/`bottom`/`left` | A `position: relative; left: 30px` box stays exactly where block layout put it. |
 | `vertical-align` | Lines are always baseline-aligned. |
 | `text-align` | A line always starts at the containing block's left content edge. |
-| `overflow`, `display: flex` | Nothing clips and no new formatting context is established. |
+| `overflow` | Nothing clips; no scroll container is established inside a page. |
+| `display: grid` | Recognised but laid out as ordinary blocks. |
 | `display: table*` | Rows and cells stack as ordinary blocks at full width. |
 
 A reader should expect these features to have **no layout effect** rather than to
-produce a warning of their own. Note that the class comment in `Layout.h` still
-lists "floats" and "table display types" among the features the engine covers;
-that sentence overstates the code, and this table is the accurate statement.
+produce a warning of their own.
+
+## Flexbox
+
+`display: flex` is laid out by `LayoutEngine::layoutFlexChildren()`, reached from
+the same dispatch in `layoutBlock()` that chooses between block and inline
+layout. It follows the specification's structure rather than being a pile of
+special cases, because the parts of flexbox that look like details — growing,
+shrinking, wrapping, alignment — are all consequences of two numbers: each
+item's **base size** and the **free space** left in its line.
+
+### The passes
+
+1. **Collect.** The container's children become items, in document order.
+   Absolutely positioned children are skipped, since they are out of flow. The
+   items are then stably sorted by `order`, which is what `order: -1` uses to pull
+   an item to the front without moving it in the DOM.
+
+2. **Base size.** Each item's base size is its `flex-basis`, or its own
+   `width`/`height` when the basis is auto, or finally its measured content size.
+   A definite basis wins over the item's width, which is what makes
+   `flex: 0 0 150px` give equal columns regardless of content. Sizing from
+   content is the expensive case: the item has to be laid out once to find out
+   how big it wants to be, and that measurement is thrown away.
+
+3. **Lines.** With `flex-wrap`, items go into lines that fit the container's main
+   size. An item that alone exceeds the container still starts a line, which is
+   what browsers do rather than dropping it.
+
+4. **Free space.** On each line the free space is distributed by the grow
+   factors, or the deficit taken back by the shrink factors. Growing uses the raw
+   factor; **shrinking is weighted by the factor times the base size**, so a large
+   item gives up more than a small one — without that, a small item would shrink
+   away to nothing. `min-width` and `max-width` are re-applied afterwards, which
+   is what stops a shrunk item collapsing past its floor.
+
+5. **Measure.** Each item is laid out at its resolved main size, which is what
+   determines its cross size when that is not definite.
+
+6. **Place.** `justify-content` distributes the leftover on the main axis,
+   `align-items`/`align-self` position each item on the cross axis, and
+   `align-content` spaces the lines themselves. The `gap` between items is part
+   of the free-space calculation, so a row with gaps still fills exactly.
+
+### The awkward parts
+
+Three things are easy to get wrong, and each cost a bug here:
+
+* **The main size must not be re-derived.** `layoutBlock()` resolves a box's
+  width from its `width` property, so an item computed as 150px wide by flex
+  would come out 10px wide when its style also said `width: 10px`. The item is
+  laid out with a style whose width *is* the resolved main size, and the original
+  style is put back afterwards. That style is switched to `content-box` for the
+  duration, because flex works in content sizes while `box-sizing: border-box`
+  describes the border box.
+
+* **Stretch needs a definite size.** `align-items: stretch` has to give the item
+  a height. An auto height would simply be re-measured from the content and come
+  back unstretched, so the stretch is applied as an explicit size.
+
+* **A flex container must not wrap its children in an anonymous block.** Every
+  other block container does this, to keep block and inline content from mixing.
+  For a flex container it is exactly wrong: the wrapper becomes a single flex
+  item, so `justify-content` has nothing to distribute between. This is the bug
+  that made a toolbar's two spans sit adjacent however `space-between` was set.
+
+### Interaction with `box-sizing`
+
+`box-sizing: border-box` is set by nearly every modern stylesheet, so it matters
+that the engine honours it: a specified width or height includes the padding and
+border, and they are subtracted to leave the content size the rest of layout works
+in. Flex adds one rule on top — a border-box basis or width already includes the
+padding, so it comes off before the item's base size is used for growing and
+shrinking. Without that, a padded card overflows the row it is flexible in, which
+is the most common flexbox pattern there is.
+
+### Tests
+
+`tests/unit/tst_layout.cpp` covers flexbox in twenty-five cases: direction and
+reversal, grow, shrink, all six `justify-content` values, three `align-items`
+values, stretch, columns, wrapping, gaps, `order`, `flex-basis` including
+percentages, nesting, the anonymous-box rule, and `box-sizing` for both plain
+boxes and flex items.
 
 ## Painting
 
@@ -321,7 +402,8 @@ makes clicking text inside a link work.
 
 ## What a reader will notice
 
-* Floats, positioning, flex, grid and tables do not affect layout.
+* Floats, positioning, grid and tables do not affect layout.
+* Flexbox does affect layout, through `layoutFlexChildren()`; see below.
 * `documentWidth` is `max(viewportWidth, root right edge)`, so a page does not
   scroll horizontally unless a box overflows.
 * Text is measured with platform fonts, so a layout can differ by a pixel or two

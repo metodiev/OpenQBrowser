@@ -74,6 +74,25 @@ private slots:
     void respectsSpecifiedWidth();
     void resolvesPercentageWidth();
     void centresWithAutoMargins();
+
+    // Flexbox.
+    void laysFlexItemsInARow();
+    void flexGrowSharesFreeSpace();
+    void flexShrinkTakesSpaceBack();
+    void honoursJustifyContent_data();
+    void honoursJustifyContent();
+    void honoursAlignItems_data();
+    void honoursAlignItems();
+    void stretchesItemsByDefault();
+    void laysFlexColumn();
+    void reversesRowDirection();
+    void wrapsItemsOntoLines();
+    void honoursFlexGap();
+    void appliesOrder();
+    void handlesFlexBasis();
+    void keepsFlexItemsOutOfTheAnonymousBox();
+    void handlesNestedFlexContainers();
+    void honoursBoxSizing();
     void collapsesAdjacentMargins();
     void wrapsLongTextIntoLines();
     void laysOutInlineElements();
@@ -389,6 +408,528 @@ void LayoutTest::cullsOffscreenContent()
         }
     }
     QCOMPARE(green, 0);
+}
+
+// ------------------------------------------------------------------ flexbox
+
+void LayoutTest::laysFlexItemsInARow()
+{
+    // A row container places its items side by side, left to right, in document
+    // order. Before flexbox existed every one of these stacked vertically.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:600px'>"
+        "<div id='a' style='width:100px'>A</div>"
+        "<div id='b' style='width:200px'>B</div>"
+        "<div id='c' style='width:150px'>C</div>"
+        "</div></body></html>"));
+
+    renderer::Box *row = page.boxForId(QStringLiteral("row"));
+    QVERIFY(row);
+    QCOMPARE(row->width(), 600.0);
+
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    renderer::Box *c = page.boxForId(QStringLiteral("c"));
+    QVERIFY(a && b && c);
+
+    // The widths are honoured, since nothing grows or shrinks by default beyond
+    // the shrink factor that only applies when the line overflows.
+    QCOMPARE(a->width(), 100.0);
+    QCOMPARE(b->width(), 200.0);
+    QCOMPARE(c->width(), 150.0);
+
+    // Each item starts where the previous one ended, and they share one row: a
+    // row of items is side by side, so their y positions agree.
+    QCOMPARE(a->x(), row->contentBox().x());
+    QCOMPARE(b->x(), a->x() + a->width());
+    QCOMPARE(c->x(), b->x() + b->width());
+    QCOMPARE(a->y(), b->y());
+    QCOMPARE(b->y(), c->y());
+}
+
+void LayoutTest::flexGrowSharesFreeSpace()
+{
+    // free space 600 - (100 + 200) = 300, split 1:2 between the two items.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:600px'>"
+        "<div id='a' style='flex:1 1 100px'>A</div>"
+        "<div id='b' style='flex:2 1 100px'>B</div>"
+        "</div></body></html>"));
+
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY(a && b);
+
+    // 100 + 100 = 200 used, so 400 is free and shared 1:2.
+    QVERIFY(qAbs(a->width() - 233.333333) < 0.01);
+    QVERIFY(qAbs(b->width() - 366.666667) < 0.01);
+
+    // The two items fill the row exactly, which is what growing is for.
+    QVERIFY(qAbs((a->width() + b->width()) - 600.0) < 0.01);
+    QCOMPARE(b->x(), a->x() + a->width());
+}
+
+void LayoutTest::flexShrinkTakesSpaceBack()
+{
+    // Two 400px items in a 600px row have to give up 200px. Shrinking is
+    // weighted by the base size, and both are equal, so each gives up half.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:600px'>"
+        "<div id='a' style='flex:0 1 400px'>A</div>"
+        "<div id='b' style='flex:0 1 400px'>B</div>"
+        "</div></body></html>"));
+
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY(a && b);
+
+    QCOMPARE(a->width(), 300.0);
+    QCOMPARE(b->width(), 300.0);
+
+    // An item that may not shrink keeps its size and overflows instead.
+    Page fixed(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:200px'>"
+        "<div id='a' style='flex:0 0 400px'>A</div>"
+        "</div></body></html>"));
+
+    renderer::Box *wide = fixed.boxForId(QStringLiteral("a"));
+    QVERIFY(wide);
+    QCOMPARE(wide->width(), 400.0);
+}
+
+void LayoutTest::honoursJustifyContent_data()
+{
+    QTest::addColumn<QString>("justify");
+    QTest::addColumn<double>("firstX");
+    QTest::addColumn<double>("secondX");
+
+    // Two 100px items in a 500px row leave 300px for justify-content to place.
+    QTest::newRow("flex-start") << QStringLiteral("flex-start") << 0.0 << 100.0;
+    QTest::newRow("flex-end") << QStringLiteral("flex-end") << 300.0 << 400.0;
+    QTest::newRow("center") << QStringLiteral("center") << 150.0 << 250.0;
+    QTest::newRow("space-between") << QStringLiteral("space-between") << 0.0 << 400.0;
+    QTest::newRow("space-around") << QStringLiteral("space-around") << 75.0 << 325.0;
+    QTest::newRow("space-evenly") << QStringLiteral("space-evenly") << 100.0 << 300.0;
+}
+
+void LayoutTest::honoursJustifyContent()
+{
+    QFETCH(QString, justify);
+    QFETCH(double, firstX);
+    QFETCH(double, secondX);
+
+    Page page(QStringLiteral(
+                  "<html><body style='margin:0'>"
+                  "<div id='row' style='display:flex; width:500px; justify-content:%1'>"
+                  "<div id='a' style='flex:0 0 100px'>A</div>"
+                  "<div id='b' style='flex:0 0 100px'>B</div>"
+                  "</div></body></html>")
+                  .arg(justify));
+
+    renderer::Box *row = page.boxForId(QStringLiteral("row"));
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY(row && a && b);
+
+    // Positions are relative to the row's content box, which is where flex
+    // layout places items.
+    const double base = row->contentBox().x();
+    QVERIFY2(qAbs((a->x() - base) - firstX) < 0.01,
+             qPrintable(QStringLiteral("first item at %1, expected %2")
+                            .arg(a->x() - base)
+                            .arg(firstX)));
+    QVERIFY2(qAbs((b->x() - base) - secondX) < 0.01,
+             qPrintable(QStringLiteral("second item at %1, expected %2")
+                            .arg(b->x() - base)
+                            .arg(secondX)));
+}
+
+void LayoutTest::honoursAlignItems_data()
+{
+    QTest::addColumn<QString>("align");
+    QTest::addColumn<double>("expectedY");
+
+    // The tallest item is 100px, and the short one is 20px tall, so the short
+    // item's offset within the line is what align-items decides.
+    QTest::newRow("flex-start") << QStringLiteral("flex-start") << 0.0;
+    QTest::newRow("flex-end") << QStringLiteral("flex-end") << 80.0;
+    QTest::newRow("center") << QStringLiteral("center") << 40.0;
+}
+
+void LayoutTest::honoursAlignItems()
+{
+    QFETCH(QString, align);
+    QFETCH(double, expectedY);
+
+    Page page(QStringLiteral(
+                  "<html><body style='margin:0'>"
+                  "<div id='row' style='display:flex; width:400px; align-items:%1'>"
+                  "<div id='tall' style='width:100px; height:100px'>T</div>"
+                  "<div id='short' style='width:100px; height:20px'>S</div>"
+                  "</div></body></html>")
+                  .arg(align));
+
+    renderer::Box *row = page.boxForId(QStringLiteral("row"));
+    renderer::Box *shortItem = page.boxForId(QStringLiteral("short"));
+    QVERIFY(row && shortItem);
+
+    const double base = row->contentBox().y();
+    QVERIFY2(qAbs((shortItem->y() - base) - expectedY) < 0.01,
+             qPrintable(QStringLiteral("short item at %1, expected %2")
+                            .arg(shortItem->y() - base)
+                            .arg(expectedY)));
+}
+
+void LayoutTest::stretchesItemsByDefault()
+{
+    // align-items defaults to stretch, so an item with no height fills the line.
+    // This is the behaviour that makes equal-height columns work.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:400px'>"
+        "<div id='tall' style='width:100px; height:120px'>T</div>"
+        "<div id='auto' style='width:100px'>A</div>"
+        "</div></body></html>"));
+
+    renderer::Box *tall = page.boxForId(QStringLiteral("tall"));
+    renderer::Box *stretched = page.boxForId(QStringLiteral("auto"));
+    QVERIFY(tall && stretched);
+
+    QCOMPARE(tall->height(), 120.0);
+    QCOMPARE(stretched->height(), 120.0);
+    QCOMPARE(stretched->y(), tall->y());
+}
+
+void LayoutTest::laysFlexColumn()
+{
+    // A column container stacks its items, and the main axis becomes vertical.
+    // justify-content then moves them down the container instead of across.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='col' style='display:flex; flex-direction:column; width:300px; height:400px;"
+        " justify-content:space-between'>"
+        "<div id='a' style='height:50px'>A</div>"
+        "<div id='b' style='height:50px'>B</div>"
+        "</div></body></html>"));
+
+    renderer::Box *col = page.boxForId(QStringLiteral("col"));
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY(col && a && b);
+
+    // Items stack, and they fill the container's width by default.
+    QCOMPARE(a->width(), 300.0);
+    QCOMPARE(b->width(), 300.0);
+
+    const double base = col->contentBox().y();
+    QCOMPARE(a->y() - base, 0.0);
+
+    // space-between puts the last item flush with the bottom: 400 - 50 = 350.
+    QVERIFY2(qAbs((b->y() - base) - 350.0) < 0.01,
+             qPrintable(QStringLiteral("last item at %1").arg(b->y() - base)));
+}
+
+void LayoutTest::reversesRowDirection()
+{
+    // row-reverse places the first item on the right, so document order is
+    // reversed on the main axis while the items keep their own sizes.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; flex-direction:row-reverse; width:400px'>"
+        "<div id='a' style='flex:0 0 100px'>A</div>"
+        "<div id='b' style='flex:0 0 100px'>B</div>"
+        "</div></body></html>"));
+
+    renderer::Box *row = page.boxForId(QStringLiteral("row"));
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY(row && a && b);
+
+    const double base = row->contentBox().x();
+    // A comes first in the document, so it is placed at the far end.
+    QVERIFY2(qAbs((a->x() - base) - 300.0) < 0.01,
+             qPrintable(QStringLiteral("first item at %1, expected 300").arg(a->x() - base)));
+    QVERIFY2(qAbs((b->x() - base) - 200.0) < 0.01,
+             qPrintable(QStringLiteral("second item at %1, expected 200").arg(b->x() - base)));
+}
+
+void LayoutTest::wrapsItemsOntoLines()
+{
+    // Three 100px items in a 250px wrapping row fit two to a line, with the
+    // third wrapping to the next.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; flex-wrap:wrap; width:250px'>"
+        "<div id='a' style='flex:0 0 100px; height:20px'>A</div>"
+        "<div id='b' style='flex:0 0 100px; height:20px'>B</div>"
+        "<div id='c' style='flex:0 0 100px; height:20px'>C</div>"
+        "</div></body></html>"));
+
+    renderer::Box *row = page.boxForId(QStringLiteral("row"));
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    renderer::Box *c = page.boxForId(QStringLiteral("c"));
+    QVERIFY(row && a && b && c);
+
+    // A and B share the first line, so their y positions agree and they sit
+    // side by side.
+    QCOMPARE(a->y(), b->y());
+    QCOMPARE(b->x(), a->x() + 100.0);
+
+    // C wrapped, so it is below them and back at the start of the line.
+    QCOMPARE(c->x(), a->x());
+    QVERIFY2(c->y() > b->y(), "the wrapped item should be on a lower line");
+
+    // The container grew to hold both lines.
+    QCOMPARE(row->height(), 40.0);
+
+    // Without wrapping the same items stay on one line and overflow.
+    Page nowrap(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:250px'>"
+        "<div id='a' style='flex:0 0 100px; height:20px'>A</div>"
+        "<div id='b' style='flex:0 0 100px; height:20px'>B</div>"
+        "<div id='c' style='flex:0 0 100px; height:20px'>C</div>"
+        "</div></body></html>"));
+
+    renderer::Box *na = nowrap.boxForId(QStringLiteral("a"));
+    renderer::Box *nc = nowrap.boxForId(QStringLiteral("c"));
+    QVERIFY(na && nc);
+    QCOMPARE(na->y(), nc->y());
+    QCOMPARE(nc->x(), na->x() + 200.0);
+}
+
+void LayoutTest::honoursFlexGap()
+{
+    // gap puts space between items and never before the first or after the last,
+    // which is the difference between gap and margin.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:500px; gap:20px'>"
+        "<div id='a' style='flex:0 0 100px; height:10px'>A</div>"
+        "<div id='b' style='flex:0 0 100px; height:10px'>B</div>"
+        "<div id='c' style='flex:0 0 100px; height:10px'>C</div>"
+        "</div></body></html>"));
+
+    renderer::Box *row = page.boxForId(QStringLiteral("row"));
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    renderer::Box *c = page.boxForId(QStringLiteral("c"));
+    QVERIFY(row && a && b && c);
+
+    const double base = row->contentBox().x();
+    QCOMPARE(a->x() - base, 0.0);
+    QCOMPARE(b->x() - base, 120.0);
+    QCOMPARE(c->x() - base, 240.0);
+
+    // The gaps are accounted for when the free space is computed, so the items
+    // keep the size the shorthand gave them and the leftover stays unused. The
+    // gaps are what separates them, and none appears before the first or after
+    // the last, which is the difference between gap and margin.
+    QCOMPARE(a->width(), 100.0);
+    QCOMPARE(b->width(), 100.0);
+    QCOMPARE(c->width(), 100.0);
+    QCOMPARE(a->width() + b->width() + c->width() + 40.0, 340.0);
+
+    // With a grow factor the items do take the leftover, and the gaps are still
+    // subtracted from what is distributed.
+    Page growing(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:500px; gap:20px'>"
+        "<div id='a' style='flex:1 1 100px; height:10px'>A</div>"
+        "<div id='b' style='flex:1 1 100px; height:10px'>B</div>"
+        "<div id='c' style='flex:1 1 100px; height:10px'>C</div>"
+        "</div></body></html>"));
+
+    renderer::Box *ga = growing.boxForId(QStringLiteral("a"));
+    QVERIFY(ga);
+    // 500 - 300 - 40 = 160 shared equally, so each item becomes 100 + 53.33.
+    QVERIFY(qAbs(ga->width() - 153.333333) < 0.01);
+}
+
+void LayoutTest::appliesOrder()
+{
+    // order changes the sequence items are placed in without changing the
+    // document, which `order: -1` uses to pull an item to the front.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:400px'>"
+        "<div id='a' style='flex:0 0 100px; order:1'>A</div>"
+        "<div id='b' style='flex:0 0 100px; order:-1'>B</div>"
+        "<div id='c' style='flex:0 0 100px'>C</div>"
+        "</div></body></html>"));
+
+    renderer::Box *row = page.boxForId(QStringLiteral("row"));
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    renderer::Box *c = page.boxForId(QStringLiteral("c"));
+    QVERIFY(row && a && b && c);
+
+    const double base = row->contentBox().x();
+
+    // B has the lowest order so it goes first; A has the highest so it last.
+    QCOMPARE(b->x() - base, 0.0);
+    QCOMPARE(c->x() - base, 100.0);
+    QCOMPARE(a->x() - base, 200.0);
+}
+
+void LayoutTest::handlesFlexBasis()
+{
+    // A definite flex-basis wins over the item's width, which is what makes the
+    // shorthand usable for equal columns regardless of content.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:300px'>"
+        "<div id='a' style='width:10px; flex:0 0 150px'>A</div>"
+        "<div id='b' style='width:10px; flex:0 0 150px'>B</div>"
+        "</div></body></html>"));
+
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY(a && b);
+
+    QCOMPARE(a->width(), 150.0);
+    QCOMPARE(b->width(), 150.0);
+
+    // A percentage basis resolves against the container's main size.
+    Page percent(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:400px'>"
+        "<div id='a' style='flex:0 0 25%'>A</div>"
+        "<div id='b' style='flex:0 0 50%'>B</div>"
+        "</div></body></html>"));
+
+    QCOMPARE(percent.boxForId(QStringLiteral("a"))->width(), 100.0);
+    QCOMPARE(percent.boxForId(QStringLiteral("b"))->width(), 200.0);
+}
+
+void LayoutTest::keepsFlexItemsOutOfTheAnonymousBox()
+{
+    // A flex container must not wrap its inline children in an anonymous block:
+    // each child is an item of its own. Wrapping them made the whole run one
+    // item, so justify-content had nothing to distribute between.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='row' style='display:flex; width:400px; justify-content:space-between'>"
+        "<span id='a'>A</span><span id='b'>B</span>"
+        "</div></body></html>"));
+
+    renderer::Box *row = page.boxForId(QStringLiteral("row"));
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY(row && a && b);
+
+    // Two spans are two items, so space-between separates them across the row.
+    const double base = row->contentBox().x();
+    QCOMPARE(a->x() - base, 0.0);
+    QVERIFY2(b->x() > a->x() + 300.0,
+             qPrintable(QStringLiteral("second span at %1").arg(b->x() - base)));
+
+    // The container has exactly two children, which is what proves no anonymous
+    // wrapper was inserted.
+    QCOMPARE(row->childCount(), 2);
+}
+
+void LayoutTest::handlesNestedFlexContainers()
+{
+    // A flex item may itself be a flex container, which is the outer-shell
+    // pattern every page uses.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='outer' style='display:flex; width:600px'>"
+        "<div id='sidebar' style='flex:0 0 200px'></div>"
+        "<div id='main' style='flex:1; display:flex; gap:10px'>"
+        "<div id='x' style='flex:1'>X</div>"
+        "<div id='y' style='flex:1'>Y</div>"
+        "</div>"
+        "</div></body></html>"));
+
+    renderer::Box *outer = page.boxForId(QStringLiteral("outer"));
+    renderer::Box *sidebar = page.boxForId(QStringLiteral("sidebar"));
+    renderer::Box *main = page.boxForId(QStringLiteral("main"));
+    renderer::Box *x = page.boxForId(QStringLiteral("x"));
+    renderer::Box *y = page.boxForId(QStringLiteral("y"));
+    QVERIFY(outer && sidebar && main && x && y);
+
+    QCOMPARE(sidebar->width(), 200.0);
+    QCOMPARE(main->width(), 400.0);
+
+    // The inner row splits its 400px between two items with a 10px gap.
+    QCOMPARE(x->width(), 195.0);
+    QCOMPARE(y->width(), 195.0);
+    QCOMPARE(y->x(), x->x() + 195.0 + 10.0);
+}
+
+void LayoutTest::honoursBoxSizing()
+{
+    // content-box is the initial value: the specified width is the content, and
+    // padding and border are added outside it.
+    Page contentBox(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='a' style='width:100px; padding:10px; border:5px solid black'>x</div>"
+        "</body></html>"));
+
+    renderer::Box *plain = contentBox.boxForId(QStringLiteral("a"));
+    QVERIFY(plain);
+    QCOMPARE(plain->width(), 130.0); // 100 + 2*10 padding + 2*5 border
+
+    // border-box makes the specified width the whole border box, which is what
+    // `* { box-sizing: border-box }` asks for and what nearly every modern
+    // stylesheet sets.
+    Page borderBox(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='a' style='box-sizing:border-box; width:100px; padding:10px;"
+        " border:5px solid black'>x</div>"
+        "</body></html>"));
+
+    renderer::Box *sized = borderBox.boxForId(QStringLiteral("a"));
+    QVERIFY(sized);
+    QCOMPARE(sized->width(), 100.0);
+    // The content box is what is left, which is what the padding and border are
+    // taken out of.
+    QCOMPARE(sized->contentBox().width(), 70.0);
+
+    // A percentage of the containing block follows the same rule.
+    Page percentage(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div style='width:200px'>"
+        "<div id='a' style='box-sizing:border-box; width:50%; padding:10px'>x</div>"
+        "</div></body></html>"));
+
+    renderer::Box *half = percentage.boxForId(QStringLiteral("a"));
+    QVERIFY(half);
+    QCOMPARE(half->width(), 100.0);
+    QCOMPARE(half->contentBox().width(), 80.0);
+
+    // The height follows the same rule.
+    Page heights(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='a' style='box-sizing:border-box; height:60px; padding:10px'>x</div>"
+        "</body></html>"));
+
+    renderer::Box *boxed = heights.boxForId(QStringLiteral("a"));
+    QVERIFY(boxed);
+    QCOMPARE(boxed->height(), 60.0);
+
+    // A flex item with a basis and padding is a border box too, which is what
+    // stops a padded card from overflowing its row.
+    Page flex(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div style='display:flex; box-sizing:border-box; width:300px'>"
+        "<div id='a' style='box-sizing:border-box; flex:1 1 100px; padding:10px'>A</div>"
+        "<div id='b' style='box-sizing:border-box; flex:1 1 100px; padding:10px'>B</div>"
+        "</div></body></html>"));
+
+    renderer::Box *fa = flex.boxForId(QStringLiteral("a"));
+    renderer::Box *fb = flex.boxForId(QStringLiteral("b"));
+    QVERIFY(fa && fb);
+    QCOMPARE(fa->width(), 150.0);
+    QCOMPARE(fb->width(), 150.0);
+    QCOMPARE(fb->x(), fa->x() + 150.0);
 }
 
 QTEST_MAIN(LayoutTest)

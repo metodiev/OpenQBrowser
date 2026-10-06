@@ -169,7 +169,7 @@ the shared `HistoryStore` cursor for back and forward. `ui::MainWindow` owns one
 The stages are real but partial, and each has its own document:
 
 * No module scripts, no `fetch`, and no Web Storage; see [javascript.md](javascript.md).
-* `display: flex` and `display: grid` are parsed but laid out as ordinary blocks.
+* `display: grid` is parsed but laid out as ordinary blocks; `display: flex` is implemented.
 * Table display types are parsed and boxed, but there is no table layout algorithm.
 * `float` is stored on the style and never used for placement.
 * `position: absolute/fixed/relative` is stored but no offsets are applied.

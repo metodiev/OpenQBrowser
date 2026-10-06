@@ -611,6 +611,295 @@ void StyleEngine::applyDeclaration(ComputedStyle *style, const Declaration &decl
         return;
     }
 
+    // --------------------------------------------------------------- flexbox
+    //
+    // The flex properties are validated here rather than at layout time, so an
+    // unsupported keyword leaves the initial value in place and shows up in the
+    // inspector instead of being silently treated as something else.
+
+    if (property == QLatin1String("flex-direction")) {
+        static const QSet<QString> kValid = {
+            QStringLiteral("row"), QStringLiteral("row-reverse"), QStringLiteral("column"),
+            QStringLiteral("column-reverse")};
+        const QString keyword = keywordOr(style->flexDirection);
+        if (!kValid.contains(keyword)) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+        style->flexDirection = keyword;
+        return;
+    }
+
+    if (property == QLatin1String("flex-wrap")) {
+        static const QSet<QString> kValid = {QStringLiteral("nowrap"), QStringLiteral("wrap"),
+                                             QStringLiteral("wrap-reverse")};
+        const QString keyword = keywordOr(style->flexWrap);
+        if (!kValid.contains(keyword)) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+        style->flexWrap = keyword;
+        return;
+    }
+
+    if (property == QLatin1String("justify-content")) {
+        static const QSet<QString> kValid = {
+            QStringLiteral("flex-start"), QStringLiteral("flex-end"), QStringLiteral("center"),
+            QStringLiteral("space-between"), QStringLiteral("space-around"),
+            QStringLiteral("space-evenly"), QStringLiteral("start"), QStringLiteral("end")};
+        QString keyword = keywordOr(style->justifyContent);
+
+        // "start" and "end" are the modern spelling of flex-start and flex-end.
+        // They are normalised so layout only has one form to handle.
+        if (keyword == QLatin1String("start"))
+            keyword = QStringLiteral("flex-start");
+        else if (keyword == QLatin1String("end"))
+            keyword = QStringLiteral("flex-end");
+
+        if (!kValid.contains(keyword)) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+        style->justifyContent = keyword;
+        return;
+    }
+
+    if (property == QLatin1String("align-items")) {
+        static const QSet<QString> kValid = {
+            QStringLiteral("stretch"), QStringLiteral("flex-start"), QStringLiteral("flex-end"),
+            QStringLiteral("center"), QStringLiteral("baseline"), QStringLiteral("start"),
+            QStringLiteral("end")};
+        QString keyword = keywordOr(style->alignItems);
+        if (keyword == QLatin1String("start"))
+            keyword = QStringLiteral("flex-start");
+        else if (keyword == QLatin1String("end"))
+            keyword = QStringLiteral("flex-end");
+
+        if (!kValid.contains(keyword)) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+        style->alignItems = keyword;
+        return;
+    }
+
+    if (property == QLatin1String("align-content")) {
+        static const QSet<QString> kValid = {
+            QStringLiteral("stretch"), QStringLiteral("flex-start"), QStringLiteral("flex-end"),
+            QStringLiteral("center"), QStringLiteral("space-between"),
+            QStringLiteral("space-around")};
+        const QString keyword = keywordOr(style->alignContent);
+        if (!kValid.contains(keyword)) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+        style->alignContent = keyword;
+        return;
+    }
+
+    if (property == QLatin1String("align-self")) {
+        static const QSet<QString> kValid = {
+            QStringLiteral("auto"), QStringLiteral("stretch"), QStringLiteral("flex-start"),
+            QStringLiteral("flex-end"), QStringLiteral("center"), QStringLiteral("baseline")};
+        const QString keyword = keywordOr(style->alignSelf);
+        if (!kValid.contains(keyword)) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+        style->alignSelf = keyword;
+        return;
+    }
+
+    if (property == QLatin1String("order")) {
+        if (value.kind != Value::Kind::Number) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+        style->order = static_cast<int>(value.number);
+        return;
+    }
+
+    if (property == QLatin1String("flex-grow") || property == QLatin1String("flex-shrink")) {
+        if (value.kind != Value::Kind::Number) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+        // A negative factor is invalid; the declaration is dropped rather than
+        // clamped, which is what the specification asks for.
+        if (value.number < 0) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+        if (property == QLatin1String("flex-grow"))
+            style->flexGrow = value.number;
+        else
+            style->flexShrink = value.number;
+        return;
+    }
+
+    if (property == QLatin1String("flex-basis")) {
+        if (value.isKeyword(QStringLiteral("auto"))) {
+            style->flexBasis = LengthOrAuto();
+            style->hasFlexBasis = false;
+            return;
+        }
+        if (value.isKeyword(QStringLiteral("content"))) {
+            // "content" sizes from the item's content, which for this engine is
+            // the same as auto sizing.
+            style->flexBasis = LengthOrAuto();
+            style->hasFlexBasis = false;
+            return;
+        }
+        const LengthOrAuto basis
+            = resolveLength(value, style->fontSize, m_context.rootFontSize,
+                            m_context.viewportWidth, m_context.viewportHeight, true);
+
+        // resolveLength leaves auto in place for an "auto" keyword and for a
+        // value it cannot use, so an auto result here means the declaration was
+        // not a length at all.
+        if (basis.isAuto()) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+
+        style->flexBasis = basis;
+        style->hasFlexBasis = true;
+        return;
+    }
+
+    if (property == QLatin1String("flex")) {
+        // The shorthand's three parts, in any of the forms CSS allows:
+        //   flex: 1            -> 1 1 0%
+        //   flex: 1 2          -> 1 2 0%
+        //   flex: 1 2 30px     -> the three parts
+        //   flex: auto         -> 1 1 auto
+        //   flex: none         -> 0 0 auto
+        const QString raw = value.toString().trimmed();
+
+        if (raw == QLatin1String("none")) {
+            style->flexGrow = 0;
+            style->flexShrink = 0;
+            style->flexBasis = LengthOrAuto();
+            style->hasFlexBasis = false;
+            return;
+        }
+
+        if (raw == QLatin1String("auto")) {
+            style->flexGrow = 1;
+            style->flexShrink = 1;
+            style->flexBasis = LengthOrAuto();
+            style->hasFlexBasis = false;
+            return;
+        }
+
+        const QList<QString> parts = raw.split(QRegularExpression(QStringLiteral("\\s+")),
+                                              Qt::SkipEmptyParts);
+        if (parts.isEmpty() || parts.size() > 3) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+
+        double grow = 1;
+        double shrink = 1;
+        bool sawGrow = false;
+        bool sawShrink = false;
+        bool sawBasis = false;
+        LengthOrAuto basis;
+
+        for (const QString &part : parts) {
+            const Value item = parseSingleValue(part);
+
+            if (item.isKeyword(QStringLiteral("auto")) || item.isKeyword(QStringLiteral("content"))
+                || item.isKeyword(QStringLiteral("min-content"))
+                || item.isKeyword(QStringLiteral("max-content"))
+                || item.isKeyword(QStringLiteral("fit-content"))) {
+                // Any of the intrinsic keywords as the basis means "size from
+                // content", which is this engine's auto.
+                basis = LengthOrAuto();
+                sawBasis = true;
+                continue;
+            }
+
+            if (item.kind == Value::Kind::Number) {
+                if (item.number < 0) {
+                    if (consumed)
+                        *consumed = false;
+                    return;
+                }
+                // The first number is grow, the second shrink.
+                if (!sawGrow) {
+                    grow = item.number;
+                    sawGrow = true;
+                } else if (!sawShrink) {
+                    shrink = item.number;
+                    sawShrink = true;
+                }
+                continue;
+            }
+
+            // Anything else is a length, which is the basis.
+            basis = resolveLength(item, style->fontSize, m_context.rootFontSize,
+                                  m_context.viewportWidth, m_context.viewportHeight, true);
+            if (basis.isAuto()) {
+                if (consumed)
+                    *consumed = false;
+                return;
+            }
+            sawBasis = true;
+        }
+
+        style->flexGrow = grow;
+        style->flexShrink = shrink;
+        if (sawBasis) {
+            style->flexBasis = basis;
+            style->hasFlexBasis = true;
+        } else {
+            // A bare `flex: 1` gives a zero basis, which is what makes the item
+            // share the free space rather than start from its own content size.
+            style->flexBasis = LengthOrAuto::pixels(0);
+            style->hasFlexBasis = true;
+        }
+        return;
+    }
+
+    if (property == QLatin1String("gap") || property == QLatin1String("grid-gap")) {
+        // `gap` sets both axes; a second value sets the column gap separately.
+        const QList<QString> parts = splitBoxValues(value.toString());
+        const Value row = parseSingleValue(parts.value(0));
+        const Value column = parts.size() > 1 ? parseSingleValue(parts.value(1)) : row;
+
+        const auto resolve = [&](const Value &item) {
+            return resolveLength(item, style->fontSize, m_context.rootFontSize,
+                                 m_context.viewportWidth, m_context.viewportHeight, true);
+        };
+        style->rowGap = resolve(row);
+        style->columnGap = resolve(column);
+        return;
+    }
+
+    if (property == QLatin1String("row-gap") || property == QLatin1String("grid-row-gap")) {
+        style->rowGap = resolveLength(value, style->fontSize, m_context.rootFontSize,
+                                      m_context.viewportWidth, m_context.viewportHeight, true);
+        return;
+    }
+
+    if (property == QLatin1String("column-gap") || property == QLatin1String("grid-column-gap")) {
+        style->columnGap = resolveLength(value, style->fontSize, m_context.rootFontSize,
+                                         m_context.viewportWidth, m_context.viewportHeight, true);
+        return;
+    }
+
     if (property == QLatin1String("position")) {
         const QString keyword = keywordOr(style->position);
         static const QSet<QString> kValid = {QStringLiteral("static"),

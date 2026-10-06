@@ -100,6 +100,45 @@ struct ComputedStyle
     bool visible = true; ///< From the visibility property.
     bool isListItem = false;
 
+    // ------------------------------------------------------------ flexbox
+    //
+    // A flex container lays its children out along a main axis. The properties
+    // are stored as the resolved keywords the layout engine reads, so that the
+    // engine has no keyword lookup of its own and the inspector prints what the
+    // cascade produced.
+    bool isFlexContainer() const { return display == QLatin1String("flex"); }
+
+    /// "row", "row-reverse", "column" or "column-reverse".
+    QString flexDirection = QStringLiteral("row");
+    /// "nowrap", "wrap" or "wrap-reverse".
+    QString flexWrap = QStringLiteral("nowrap");
+    /// "flex-start", "flex-end", "center", "space-between", "space-around" or
+    /// "space-evenly".
+    QString justifyContent = QStringLiteral("flex-start");
+    /// "stretch", "flex-start", "flex-end", "center" or "baseline".
+    QString alignItems = QStringLiteral("stretch");
+    /// "flex-start", "flex-end", "center", "space-between", "space-around" or
+    /// "stretch".
+    QString alignContent = QStringLiteral("stretch");
+    /// The container's row and column gaps. `gap` sets both; `row-gap` and
+    /// `column-gap` override their own axis.
+    LengthOrAuto rowGap;
+    LengthOrAuto columnGap;
+
+    // A flex item's own properties.
+    /// The flex shorthand's three parts. `flexBasis` keeps auto until layout
+    /// resolves it, and a definite basis wins over the item's width.
+    LengthOrAuto flexBasis;
+    double flexGrow = 0;
+    double flexShrink = 1;
+    /// "auto", "flex-start", "flex-end", "center", "baseline" or "stretch".
+    QString alignSelf = QStringLiteral("auto");
+    int order = 0;
+
+    /// True when `flex-basis` was set explicitly, which decides whether the
+    /// item's width or its basis is the starting size.
+    bool hasFlexBasis = false;
+
     /// Width and height keep a percentage or auto until layout resolves them.
     LengthOrAuto width;
     LengthOrAuto height;
@@ -109,10 +148,13 @@ struct ComputedStyle
     LengthOrAuto maxHeight;
 
     /// Margins may be "auto", which is how a block is centred horizontally.
-    LengthOrAuto marginTop;
-    LengthOrAuto marginRight;
-    LengthOrAuto marginBottom;
-    LengthOrAuto marginLeft;
+    // The initial value of a margin is zero, not auto (CSS 2.2 §8.1). An
+    // unspecified margin must therefore start as a length, because only an
+    // explicit `margin: auto` may absorb free space.
+    LengthOrAuto marginTop = LengthOrAuto::pixels(0, QStringLiteral("0"));
+    LengthOrAuto marginRight = LengthOrAuto::pixels(0, QStringLiteral("0"));
+    LengthOrAuto marginBottom = LengthOrAuto::pixels(0, QStringLiteral("0"));
+    LengthOrAuto marginLeft = LengthOrAuto::pixels(0, QStringLiteral("0"));
 
     /// Percentage margins resolve against the containing block's width.
     LengthOrAuto paddingTop;

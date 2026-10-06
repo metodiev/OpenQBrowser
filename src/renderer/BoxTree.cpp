@@ -275,7 +275,13 @@ std::unique_ptr<Box> BoxTreeBuilder::buildForNode(dom::Node *node,
         // A block container and an inline-block both need the wrapper, because
         // both establish a formatting context of their own. A plain inline box
         // keeps its children as they are so that text can flow through it.
-        if (type == Box::Type::Block || type == Box::Type::InlineBlock) {
+        //
+        // A flex container is the exception: its children are flex items, and
+        // each one has to be an item in its own right. Wrapping them in an
+        // anonymous block would make the whole run a single item, which is why
+        // `justify-content` had nothing to distribute between.
+        const bool flexContainer = style->isFlexContainer();
+        if (!flexContainer && (type == Box::Type::Block || type == Box::Type::InlineBlock)) {
             auto anonymous = std::make_unique<Box>(Box::Type::Anonymous, nullptr, style);
             for (auto &child : inlineRun)
                 anonymous->appendChild(std::move(child));

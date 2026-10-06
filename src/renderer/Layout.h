@@ -33,9 +33,10 @@ struct LayoutResult
 /// Every box's geometry is stored in absolute document coordinates, which keeps
 /// the engine free of coordinate translations and lets the painter draw a box
 /// without walking its ancestors. The implementation covers block stacking,
-/// inline line breaking, margin collapsing, floats, table display types and
-/// replaced elements; features outside that set are recorded as warnings so the
-/// inspector can report them instead of silently mis-rendering.
+/// inline line breaking, margin collapsing, flexbox, replaced elements and
+/// box-sizing; features outside that set - floats, positioning, grid, table
+/// layout - have no layout effect at all, and rendering.md lists them so a
+/// reader knows what to expect rather than assuming they work.
 class LayoutEngine
 {
 public:
@@ -84,6 +85,73 @@ private:
     /// Lays out a block container's children sequentially. Returns the total
     /// content height, with the trailing margin reported through `lastMargin`.
     double layoutBlockChildren(Box *box, const Context &context, double *lastMargin);
+
+    /// Lays out a flex container's children along its main and cross axes and
+    /// returns the content height. Flex layout is not block layout with a
+    /// different gap: the items' sizes feed back into each other through the
+    /// free space, so the whole row (or column) is measured before anything is
+    /// placed. See architecture/rendering.md for the algorithm.
+    double layoutFlexChildren(Box *box, const Context &context);
+
+    /// One flex item, as the sizing and placing passes see it.
+    struct FlexItem
+    {
+        Box *box = nullptr;
+        /// The style the item is laid out with, which is its own.
+        const css::ComputedStyle *style = nullptr;
+
+        /// The item's outer size on the main axis, before free space is
+        /// distributed. This is its flex basis resolved to a number, or its
+        /// content size when the basis is auto.
+        double baseSize = 0;
+        /// The size after grow and shrink are applied. This is what the item is
+        /// given on the main axis.
+        double mainSize = 0;
+        /// The size on the cross axis, either the specified size or, after the
+        /// second pass, the item's own content size.
+        double crossSize = 0;
+
+        /// Outer margins on the main axis. Auto margins absorb free space, which
+        /// is how a flex item is pushed to one end.
+        double marginMainBefore = 0;
+        double marginMainAfter = 0;
+        /// Auto margins on the cross axis, which centre the item.
+        double marginCrossBefore = 0;
+        double marginCrossAfter = 0;
+
+        /// Border and padding on the main axis, so the content size is what the
+        /// item is actually laid out at.
+        double mainPaddingBorder = 0;
+        double crossPaddingBorder = 0;
+
+        /// The flex factors, copied off the style so the passes do not consult
+        /// the cascade repeatedly.
+        double grow = 0;
+        double shrink = 1;
+        /// The resolved align-self, which falls back to the container's
+        /// align-items when the item's own value is auto.
+        QString alignSelf;
+        /// The item's order property, which decides the sequence the items are
+        /// placed in.
+        int order = 0;
+        /// The item's position on the main axis, filled in by the placing pass.
+        double mainPosition = 0;
+        /// The item's position on the cross axis.
+        double crossPosition = 0;
+        /// The item's resulting outer cross size, including its margins.
+        double outerCrossSize = 0;
+    };
+
+    /// Measures and lays out one flex item at a given main-axis size.
+    /// `definiteCross` is the cross size to lay the item out at, or a negative
+    /// number when the item sizes itself.
+    void layoutFlexItem(FlexItem &item, const Context &context, double mainSize,
+                        double definiteCross, double mainOrigin, double crossOrigin,
+                        bool rowDirection);
+
+    /// The resolved value of align-self for an item: its own, or the
+    /// container's align-items when the item says auto.
+    static QString resolveAlignSelf(const FlexItem &item, const css::ComputedStyle *container);
 
     /// The resolved bottom margin a box contributes to the gap before the next
     /// sibling. layoutBlock() folds it into its return value; the caller needs
