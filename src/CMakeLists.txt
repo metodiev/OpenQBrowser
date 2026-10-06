@@ -111,6 +111,7 @@ endif()
 add_library(oqb_ui STATIC
     ui/PageView.cpp
     ui/MainWindow.cpp
+    ui/DevToolsPanel.cpp
 )
 
 target_link_libraries(oqb_ui

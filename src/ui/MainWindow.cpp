@@ -12,8 +12,11 @@
 #include <QProgressBar>
 #include <QShortcut>
 #include <QStatusBar>
+#include <QDockWidget>
 #include <QTabWidget>
 #include <QToolBar>
+
+#include "ui/DevToolsPanel.h"
 #include <QVBoxLayout>
 #include <QIcon>
 
@@ -66,6 +69,35 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
     m_boxModelAction->setCheckable(true);
     connect(m_boxModelAction, &QAction::toggled, this, &MainWindow::onShowBoxModel);
 
+    m_devToolsAction = toolbar->addAction(QStringLiteral("DevTools"));
+    m_devToolsAction->setToolTip(QStringLiteral("Show the developer tools (F12)"));
+    m_devToolsAction->setCheckable(true);
+    m_devToolsAction->setShortcut(QKeySequence(Qt::Key_F12));
+    connect(m_devToolsAction, &QAction::toggled, this, &MainWindow::onToggleDevTools);
+
+    // ------------------------------------------------------------- devtools
+    //
+    // The panel lives in a dock so it can be resized, floated or hidden without
+    // disturbing the page, and it starts hidden because most browsing does not
+    // need it.
+    m_devTools = new DevToolsPanel(this);
+    m_devToolsDock = new QDockWidget(QStringLiteral("Developer Tools"), this);
+    m_devToolsDock->setObjectName(QStringLiteral("devToolsDock"));
+    m_devToolsDock->setWidget(m_devTools);
+    m_devToolsDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::RightDockWidgetArea);
+    addDockWidget(Qt::BottomDockWidgetArea, m_devToolsDock);
+    m_devToolsDock->hide();
+
+    connect(m_devTools, &DevToolsPanel::statusMessage, this,
+            [this](const QString &message) { m_statusLabel->setText(message); });
+
+    // Closing the dock with its own close box unchecks the toolbar button, so the
+    // two ways of controlling it cannot disagree.
+    connect(m_devToolsDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        if (m_devToolsAction->isChecked() != visible)
+            m_devToolsAction->setChecked(visible);
+    });
+
     // ---------------------------------------------------------------- menus
     QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     fileMenu->addAction(QStringLiteral("&New Tab"), QKeySequence::AddTab, this,
@@ -80,6 +112,7 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
     viewMenu->addAction(m_forwardAction);
     viewMenu->addAction(m_reloadAction);
     viewMenu->addSeparator();
+    viewMenu->addAction(m_devToolsAction);
     viewMenu->addAction(QStringLiteral("Box model overlay"), this,
                         [this] { m_boxModelAction->toggle(); });
 
@@ -162,6 +195,12 @@ browser::Tab *MainWindow::addTab()
     });
 
     connect(tab, &browser::Tab::stateChanged, this, &MainWindow::updateNavigationState);
+    connect(tab, &browser::Tab::loadFinished, this, [this, tab] {
+        // Only the tab the panel is showing matters; another tab finishing must
+        // not disturb it.
+        if (m_devTools && currentTab() == tab)
+            m_devTools->refresh();
+    });
     connect(tab, &browser::Tab::loadFailed, this, [this](const QString &message) {
         m_statusLabel->setText(message);
     });
@@ -235,6 +274,22 @@ void MainWindow::openInNewTab(const network::Url &url)
     tab->navigate(url);
 }
 
+void MainWindow::onToggleDevTools(bool show)
+{
+    if (!m_devToolsDock)
+        return;
+
+    m_devToolsDock->setVisible(show);
+
+    // Showing the panel refreshes it, because the page may have changed while it
+    // was hidden and a stale view is worse than none.
+    if (show && m_devTools) {
+        m_devTools->setTab(currentTab());
+        m_devTools->setPageView(currentView());
+        m_devTools->refresh();
+    }
+}
+
 void MainWindow::onTabChanged(int index)
 {
     Q_UNUSED(index);
@@ -242,8 +297,16 @@ void MainWindow::onTabChanged(int index)
     updateTitle();
     updateNavigationState();
 
-    if (PageView *view = currentView())
+    PageView *view = currentView();
+    if (view)
         view->refresh();
+
+    // The panel follows the tab, so switching tabs shows the new page's state
+    // rather than the previous one's.
+    if (m_devTools) {
+        m_devTools->setTab(currentTab());
+        m_devTools->setPageView(view);
+    }
 }
 
 void MainWindow::onTabClosed(int index)

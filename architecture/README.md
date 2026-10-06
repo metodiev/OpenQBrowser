@@ -18,12 +18,13 @@ wrapper around `QWebEngineView`.
 | `networking.md` | `Url`, `HeaderList`, `HttpRequest`/`HttpResponse`, `HttpClient`'s state machine, body framing, content encodings, redirects, timeouts and TLS. |
 | `html.md` | The tokenizer's text modes, entity decoding, tree construction, implied elements and auto-closing, quirks mode and the implementation's limits. |
 | `css.md` | The CSS tokenizer, the `Value` model, selectors and specificity, stylesheet parsing, media queries, the cascade, inheritance and presentational hints. |
-| `rendering.md` | The box tree, anonymous boxes, block and inline layout, margin collapsing, shrink-to-fit, replaced elements, tables and painting. |
+| `rendering.md` | The box tree, anonymous boxes, block and inline layout, flexbox, positioning, margin collapsing, box-sizing, replaced elements and painting. |
+| `devtools.md` | The inspector's pure-function views, the console that evaluates in the page, the element picker, and how the panel keeps in step with the page. |
 | `browser.md` | `Page` and `Tab`, the two-phase load and its signals, built-in `about:` pages, history semantics, bookmarks and the error page taxonomy. |
-| `javascript.md` | An honest status report: JavaScript is not implemented, what happens instead, and what the `ScriptEngine` seam is for. |
+| `javascript.md` | The embedded QuickJS engine, the DOM bindings and their ownership rule, the event system, timers and how a page's scripts are ordered. |
 | `security.md` | TLS verification with no bypass, no insecure subresources from a secure page, same-origin, cookies and the default-deny permission policy. |
 | `storage.md` | The in-memory history and bookmark stores, and the design constraints for adding cookies, a cache and persistence. |
-| `testing.md` | The three test suites and their nine binaries, the loopback HTTP test server and the offscreen platform requirement. |
+| `testing.md` | The three test suites and their twelve binaries, the loopback HTTP test server and the offscreen platform requirement. |
 | `build.md` | CMake targets, the `oqb_core`/`oqb_ui` split, the presets, tests and the macOS-specific setup that actually matters. |
 | `contributing.md` | Workflow, module layout, the `src/CMakeLists.txt` rule, the coding style in the tree, and the expectation that changes come with tests. |
 
@@ -34,6 +35,7 @@ wrapper around `QWebEngineView`.
    order data flows through it.
 3. `browser.md` — how those stages are driven for one navigation and one tab.
 4. `security.md`, `storage.md` — cross-cutting concerns that touch several stages.
+5. `devtools.md` — the views that make the stages above observable.
 5. `javascript.md` — what is missing, before reading the rest of the limits.
 6. `testing.md`, `build.md`, `contributing.md` — how to work on the code.
 

@@ -11,3 +11,4 @@ function(oqb_add_browser_test name)
 endfunction()
 
 oqb_add_browser_test(tst_browser)
+oqb_add_browser_test(tst_devtools)

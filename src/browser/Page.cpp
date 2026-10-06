@@ -107,6 +107,9 @@ void Page::load(const network::Url &url)
     m_scriptsToRun.clear();
     m_pendingScripts = 0;
     m_documentArrived = false;
+    // Every load is a new navigation, so anything cached about the previous
+    // document is invalidated by this changing.
+    ++m_navigationId;
     m_domContentLoadedFired = false;
     m_document.reset();
     m_parsedDocument = nullptr;

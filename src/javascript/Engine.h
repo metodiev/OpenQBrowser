@@ -59,6 +59,9 @@ public:
     /// The console messages the script produced, in order.
     const QList<ConsoleMessage> &messages() const;
 
+    /// Forgets every message the engine has collected.
+    void clearMessages();
+
     /// Timers scheduled by the script.
     TimerQueue &timers();
     const TimerQueue &timers() const;
@@ -123,6 +126,9 @@ public:
     /// Points the engine at a document, which the browser calls once the
     /// document is parsed.
     void setDocument(dom::Document *document) override;
+
+    /// Clears both this object's list and the engine's own log.
+    void clearMessages() override;
 
     /// The underlying engine, for callers that need the timers or the bindings.
     Engine *engine() { return m_engine.get(); }

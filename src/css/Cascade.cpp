@@ -506,6 +506,11 @@ ComputedStyle StyleEngine::computeFor(const dom::Element *element, const Compute
             style.backgroundColor = QColor(m_baseBackground);
     }
 
+    // The declarations are recorded so the inspector can show which rule set
+    // each property and in what order. Without this the "rules that applied"
+    // view has nothing to read: the list was built here and then discarded.
+    m_applied.insert(element, applied);
+
     return style;
 }
 

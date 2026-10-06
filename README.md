@@ -37,7 +37,8 @@ What works today:
 | Positioning | `relative`, `absolute`, `fixed` and `sticky`, with offsets and `z-index` |
 | JavaScript | QuickJS embedded: the DOM bindings, events and timers; inline, external, `defer` and `async` scripts |
 | Browser | Tabs, back/forward history, bookmarks, built-in `about:` pages |
-| Testing | Eleven test suites, all passing |
+| DevTools | Console that evaluates in the page, element tree with computed style and applied rules, element picker, layout and resource views |
+| Testing | Twelve test suites, all passing |
 
 What does not work yet, and what you will observe:
 
@@ -134,7 +135,7 @@ repository are checked.
 # Dump the computed style of every element
 ./build/bin/openqbrowser --dump-styles https://example.com/
 
-# Everything at once, which is also what the DevTools panel will show
+# Everything at once, which is the same report the DevTools panel shows
 ./build/bin/openqbrowser --dump-all https://example.com/
 
 # Render to a PNG
@@ -173,10 +174,24 @@ does: something with a dot in it is a host name, anything else is a search.
 | `Space`, `Page Up/Down` | Scroll a screenful |
 | `Home`, `End` | Jump to the top or bottom of the page |
 | `Ctrl`/`Cmd`+click | Open a link in a new tab |
+| `F12` | Show or hide the developer tools |
 
-The **Boxes** button in the toolbar draws each box's content, padding and margin
-over the page. It is the first piece of the DevTools work described in
-[architecture/overview.md](./architecture/overview.md).
+### Developer tools
+
+The **DevTools** button in the toolbar, or **F12**, opens a dock with four tabs:
+
+| Tab | What it shows |
+| --- | --- |
+| Console | The page's `console` output, and an input line that evaluates JavaScript in the page |
+| Elements | The document tree, with the selected element's computed style and the rules that produced it |
+| Layout | The document size, the line-box count and the full box tree with geometry |
+| Network | Every subresource the page requested, and the failures with their reasons |
+
+**Pick element** arms a crosshair: the next click in the page selects that element
+in the tree, which is the quickest way to find out why something looks wrong.
+
+The **Boxes** button draws each box's content, padding and margin over the page.
+See [architecture/devtools.md](./architecture/devtools.md).
 
 ### Built-in pages
 
@@ -264,6 +279,7 @@ the subsystem you care about:
 * [javascript.md](./architecture/javascript.md) — the engine, the DOM bindings and script ordering
 * [security.md](./architecture/security.md) — what is enforced, and what is missing
 * [storage.md](./architecture/storage.md) — history and bookmarks today
+* [devtools.md](./architecture/devtools.md) — the console, the element inspector and the picker
 * [testing.md](./architecture/testing.md) — the suites and what they catch
 * [build.md](./architecture/build.md) — the build system and its specifics
 * [contributing.md](./architecture/contributing.md) — the workflow and conventions

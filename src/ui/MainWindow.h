@@ -8,6 +8,7 @@
 #include "storage/History.h"
 
 class QAction;
+class QDockWidget;
 class QLabel;
 class QLineEdit;
 class QProgressBar;
@@ -18,6 +19,7 @@ namespace oqb::browser {
 class Tab;
 }
 namespace oqb::ui {
+class DevToolsPanel;
 class PageView;
 }
 
@@ -53,6 +55,7 @@ private slots:
     void onStop();
     void onToggleBookmark();
     void onShowBoxModel(bool show);
+    void onToggleDevTools(bool show);
     void updateNavigationState();
     void updateTitle();
 
@@ -79,6 +82,10 @@ private:
     QAction *m_stopAction = nullptr;
     QAction *m_bookmarkAction = nullptr;
     QAction *m_boxModelAction = nullptr;
+    QAction *m_devToolsAction = nullptr;
+
+    QDockWidget *m_devToolsDock = nullptr;
+    DevToolsPanel *m_devTools = nullptr;
 };
 
 } // namespace oqb::ui

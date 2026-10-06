@@ -82,11 +82,11 @@ executable, links it, sets the console-executable properties, registers it with
 | --- | --- | --- |
 | `oqb_add_unit_test` | `oqb_core`, `oqb_project_options`, `Qt6::Test` | Five targets: `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript`. |
 | `oqb_add_integration_test` | same | Five targets: `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting`; all get `TIMEOUT 120` for the network cases. |
-| `oqb_add_browser_test` | `oqb_ui`, `oqb_project_options`, `Qt6::Test`, `Qt6::Widgets` | `tst_browser`; also gets `TIMEOUT 120`. |
+| `oqb_add_browser_test` | `oqb_ui`, `oqb_project_options`, `Qt6::Test`, `Qt6::Widgets` | Two targets: `tst_browser`, `tst_devtools`; both get `TIMEOUT 120`. |
 
 The integration suite registers four targets (`tst_http`, `tst_pipeline`,
 `tst_redirect`, `tst_perf`) plus `tst_scripting`, so a full `ctest` run reports
-eleven tests. `tst_redirect` drives real pages, including `http://github.com` and
+twelve tests. `tst_redirect` drives real pages, including `http://github.com` and
 a large Wikipedia article, so it is the one suite that reaches the public
 network; its 120-second timeout exists for exactly that reason.
 

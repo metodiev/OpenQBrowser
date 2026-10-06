@@ -54,7 +54,19 @@ public:
     /// makes a click navigate and the status bar show a destination.
     network::Url linkAt(const QPoint &position) const;
 
+    /// The element under a viewport point, or nullptr when there is none. The
+    /// element picker uses this; `position` is in widget coordinates, which is
+    /// what a mouse event carries.
+    const dom::Element *elementAtPoint(const QPoint &position) const;
+
+    /// True while the element picker is armed: a click selects an element for
+    /// the inspector instead of following a link.
+    void setPickingElement(bool picking);
+    bool isPickingElement() const { return m_pickingElement; }
+
 signals:
+    /// An element was picked, for the inspector to show.
+    void elementPicked(const oqb::dom::Element *element);
     /// The user asked to follow a link. The window decides how to open it.
     void linkActivated(const oqb::network::Url &url, bool newTab);
     /// The document metrics changed, so the scroll bars need updating.
@@ -94,6 +106,8 @@ private:
     QElapsedTimer m_frameClock;
     QPoint m_scroll;
     bool m_showBoxModel = false;
+    /// True while the inspector's element picker is armed.
+    bool m_pickingElement = false;
     /// True once a press has happened, so a release on the same link counts as
     /// a click rather than a drag.
     bool m_pressed = false;

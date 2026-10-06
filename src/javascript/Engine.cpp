@@ -329,6 +329,12 @@ const QList<ConsoleMessage> &Engine::messages() const
     return m_context ? m_context->messages : kEmpty;
 }
 
+void Engine::clearMessages()
+{
+    if (m_context)
+        m_context->messages.clear();
+}
+
 void Engine::runDueTimers(qint64 nowMs)
 {
     if (!isValid())
@@ -459,6 +465,10 @@ void Engine::runDueTimers(qint64 nowMs)
     Q_UNUSED(nowMs);
 }
 
+void Engine::clearMessages()
+{
+}
+
 bool Engine::takeDocumentTouched()
 {
     // Nothing can change the document without an engine, so the browser never
@@ -505,6 +515,13 @@ void QuickJsScriptEngine::setDocument(dom::Document *document)
 {
     if (m_engine && document && document != m_engine->document())
         m_engine->setDocument(document);
+}
+
+void QuickJsScriptEngine::clearMessages()
+{
+    ScriptEngine::clearMessages();
+    if (m_engine)
+        m_engine->clearMessages();
 }
 
 ExecutionResult QuickJsScriptEngine::execute(const QString &source, dom::Document *document,

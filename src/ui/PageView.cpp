@@ -175,6 +175,29 @@ void PageView::setShowBoxModel(bool show)
     update();
 }
 
+const dom::Element *PageView::elementAtPoint(const QPoint &position) const
+{
+    if (!m_tab || !m_tab->page() || !m_tab->page()->boxTree())
+        return nullptr;
+
+    // The widget point becomes a document point, which is what the box geometry
+    // is expressed in.
+    const double x = position.x() + m_scroll.x();
+    const double y = position.y() + m_scroll.y();
+    return elementAt(m_tab->page()->boxTree(), x, y);
+}
+
+void PageView::setPickingElement(bool picking)
+{
+    if (m_pickingElement == picking)
+        return;
+
+    m_pickingElement = picking;
+    // A crosshair says "this click means something else", which is what the
+    // user needs to know while the picker is armed.
+    setCursor(picking ? Qt::CrossCursor : Qt::ArrowCursor);
+}
+
 const dom::Element *PageView::linkElementAt(const QPoint &position) const
 {
     if (!m_tab || !m_tab->page()->boxTree())
@@ -254,8 +277,13 @@ void PageView::mouseMoveEvent(QMouseEvent *event)
     const network::Url link = linkAt(event->position().toPoint());
     emit linkHovered(link.isValid() ? link.toString() : QString());
 
-    // A pointing hand over a link is the affordance every browser provides.
-    setCursor(link.isValid() ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    // A pointing hand over a link is the affordance every browser provides. The
+    // picker's crosshair wins, because while it is armed a click means something
+    // other than following the link.
+    if (m_pickingElement)
+        setCursor(Qt::CrossCursor);
+    else
+        setCursor(link.isValid() ? Qt::PointingHandCursor : Qt::ArrowCursor);
 
     QWidget::mouseMoveEvent(event);
 }
@@ -269,11 +297,19 @@ void PageView::mouseReleaseEvent(QMouseEvent *event)
         // Only treat it as a click when the pointer barely moved, so a drag
         // (a future selection gesture) does not navigate.
         if ((release - m_pressPosition).manhattanLength() < 4) {
-            const network::Url link = linkAt(release);
-            if (link.isValid()) {
-                const bool newTab = event->modifiers().testFlag(Qt::ControlModifier)
-                    || event->modifiers().testFlag(Qt::MetaModifier);
-                emit linkActivated(link, newTab);
+            // While the picker is armed a click selects an element instead of
+            // following a link, which is why this is decided before the link is
+            // looked up at all.
+            if (m_pickingElement) {
+                setPickingElement(false);
+                emit elementPicked(elementAtPoint(release));
+            } else {
+                const network::Url link = linkAt(release);
+                if (link.isValid()) {
+                    const bool newTab = event->modifiers().testFlag(Qt::ControlModifier)
+                        || event->modifiers().testFlag(Qt::MetaModifier);
+                    emit linkActivated(link, newTab);
+                }
             }
         }
     }

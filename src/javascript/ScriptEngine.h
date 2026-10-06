@@ -65,7 +65,11 @@ public:
 
     /// The console messages collected so far.
     const QList<ConsoleMessage> &messages() const { return m_messages; }
-    void clearMessages() { m_messages.clear(); }
+
+    /// Forgets every message. An engine that keeps its own log overrides this so
+    /// that the two do not disagree: clearing only this list would leave the
+    /// engine re-reporting messages the browser had already discarded.
+    virtual void clearMessages() { m_messages.clear(); }
 
     /// Scripts the page declared but which could not be run.
     QStringList skippedScripts() const { return m_skipped; }

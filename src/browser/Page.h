@@ -91,6 +91,16 @@ public:
     /// without a JavaScript engine.
     bool runsScripts() const;
 
+    /// How many navigations this page has performed. It changes for every load,
+    /// including a reload, and never repeats.
+    ///
+    /// A consumer that caches anything about the document - the DevTools panel
+    /// caches its element tree - needs this rather than a document pointer,
+    /// because the allocator reuses the address of the document it just freed.
+    /// Comparing pointers therefore reports "same document" after a navigation,
+    /// which is how a stale tree survived a page change.
+    quint64 navigationId() const { return m_navigationId; }
+
     /// True while a script has a timer or animation frame waiting, so the
     /// browser knows whether its frame clock has anything to do.
     bool hasPendingScriptWork() const;
@@ -215,6 +225,9 @@ private:
     bool m_documentArrived = false;
     /// True once DOMContentLoaded has fired, so it fires exactly once.
     bool m_domContentLoadedFired = false;
+    /// Incremented by every load, so a consumer can tell that the document it
+    /// described has been replaced.
+    quint64 m_navigationId = 0;
 
     /// Decoded image sizes by URL, so that a rebuilt box tree still knows how
     /// large each image is.
