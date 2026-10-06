@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <deque>
 #include <vector>
 
 #include "renderer/BoxTree.h"
@@ -34,9 +35,10 @@ struct LayoutResult
 /// the engine free of coordinate translations and lets the painter draw a box
 /// without walking its ancestors. The implementation covers block stacking,
 /// inline line breaking, margin collapsing, flexbox, relative and absolute
-/// positioning, replaced elements and box-sizing. Features outside that set -
-/// floats, grid, table layout - have no effect at all, and rendering.md lists
-/// them so a reader knows what to expect rather than assuming they work.
+/// positioning, floats and clear, replaced elements and box-sizing. Features
+/// outside that set - grid, table layout - have no effect at all, and
+/// rendering.md lists them so a reader knows what to expect rather than assuming
+/// they work.
 class LayoutEngine
 {
 public:
@@ -46,6 +48,50 @@ public:
     /// the same reason, and markup generated rather than written can nest
     /// thousands of levels deep.
     static constexpr int kMaxLayoutDepth = 500;
+
+    /// One float that is currently affecting layout, in absolute coordinates.
+    ///
+    /// The geometry is the float's *margin* box, because that is the space it
+    /// excludes other content from: a float with a margin pushes text away by
+    /// the margin as well as by its own width.
+    struct FloatBand
+    {
+        Box *box = nullptr;
+        double left = 0;
+        double right = 0;
+        double top = 0;
+        double bottom = 0;
+        bool isLeft = true;
+    };
+
+    /// The floats active in one block formatting context.
+    ///
+    /// Floats belong to a formatting context rather than to their parent box:
+    /// they escape their parent's bounds unless it establishes one of its own.
+    /// That is why the list is per formatting context and not per container, and
+    /// why a float in one paragraph still pushes the text of the next one aside.
+    struct FloatContext
+    {
+        std::vector<FloatBand> bands;
+
+        /// The horizontal room left at `y`, as insets from the content edges.
+        ///
+        /// `leftInset` is how far the left floats reach in, `rightLimit` how far
+        /// from the left edge the right floats begin. A line between them is the
+        /// only place content may go.
+        void spanAt(double y, double contentX, double contentWidth, double *leftInset,
+                    double *rightLimit) const;
+
+        /// The lowest float bottom strictly below `y`, or `y` when there is none.
+        /// This is where content moves to when it does not fit beside a float.
+        double nextBandY(double y) const;
+
+        /// Pushes `y` below every float the `clear` value names.
+        double clearY(double y, const QString &clear) const;
+
+        /// The lowest float bottom, for a formatting context's height.
+        double bottom() const;
+    };
 
     LayoutEngine() = default;
 
@@ -76,7 +122,40 @@ private:
         double availableWidth = 0;
         /// Height of the containing block, or -1 when it depends on content.
         double availableHeight = -1;
+
+        /// The floats in force, or nullptr outside any block formatting context.
+        ///
+        /// A box establishes a new one when it is a float container - a flex
+        /// container, or a block with `overflow` other than `visible` - and then
+        /// passes a fresh context down. Pointing at the nearest enclosing
+        /// context otherwise is what makes a float in one paragraph shift the
+        /// text of the next.
+        FloatContext *floats = nullptr;
+
+        /// The content edges of the formatting context, which are what a float
+        /// is positioned against and what its insets are measured from. They are
+        /// not the same as `contentX`/`availableWidth`, because those change as
+        /// layout descends while the float context does not.
+        double flowX = 0;
+        double flowWidth = 0;
     };
+
+    /// The horizontal room left at absolute `y` inside the formatting context,
+    /// as a content x and a width. Falls back to the full width when no float
+    /// reaches `y`.
+    struct AvailableSpan
+    {
+        double x = 0;
+        double width = 0;
+    };
+    AvailableSpan spanAt(const Context &context, double y) const;
+
+    /// Places a floated box at the current position and registers it.
+    ///
+    /// The float is closed over: it is laid out with its own shrink-to-fit
+    /// width, moved to the first y where it fits beside the floats already
+    /// present, and recorded so later content avoids it.
+    void placeFloat(Box *box, const Context &context, double y);
 
     /// Lays out one block-level box at an absolute position and returns the
     /// distance from its top margin edge to the next box's top margin edge.

@@ -81,6 +81,16 @@ of `margin: 0 auto` inside `body`'s 8px margin), `collapsesAdjacentMargins`,
 `positionsListMarkers`, `sizesReplacedElements`, `growsDocumentHeightWithContent`,
 `paintsBackgroundColours`, `paintsTextPixels` and `cullsOffscreenContent`.
 
+Fifty-seven cases in all, of which twelve cover floats: both edges, shrink-to-fit,
+text avoidance, a return to full width below the float, two left floats side by
+side, a float dropping when there is no room, `clear`, containment by
+`overflow: hidden` and by `inline-block`, its deliberate absence without a
+formatting context, and a float inside a narrower parent.
+
+Several of them earn their place against a mutation. Removing `clear`, removing
+float avoidance from `spanAt()`, or removing container containment each makes the
+relevant cases fail, which is how the harness was checked rather than assumed.
+
 ### `tests/unit/tst_cookies.cpp`
 
 Covers `CookieJar` and the RFC 6265 rules directly, with no socket and no loader.

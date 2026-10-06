@@ -176,8 +176,8 @@ inline-block shrinks to fit.
 `shrinkToFitWidth(box, context)` measures the deepest text width in the subtree
 using the font metrics, adds the inline padding/border/margin indents seen along
 the way, adds the box's own left/right padding and border, and clamps the result
-to `context.availableWidth`. It is used for auto-width inline-blocks; floats never
-call it because floats are not placed. After the clamp, the box is laid out as a
+to `context.availableWidth`. It is used for auto-width inline-blocks and for
+floats that have no width of their own. After the clamp, the box is laid out as a
 block at that width and becomes an atomic inline.
 
 ### Replaced elements
@@ -229,7 +229,7 @@ implemented and documented below, so they are not listed here.
 
 | Property | What you observe |
 | --- | --- |
-| `float`, `clear` | Nothing floats; lines are not shortened around a float. |
+| `float`, `clear` | **Implemented.** A float shrinks to fit, is pushed aside by the floats before it, and shortens the lines that run beside it. `clear` moves a box below the floats it names. See the Floats section below. |
 | `vertical-align` | Lines are always baseline-aligned. |
 | `text-align` | A line always starts at the containing block's left content edge. |
 | `overflow` | Nothing clips; no scroll container is established inside a page. |
@@ -320,6 +320,116 @@ reversal, grow, shrink, all six `justify-content` values, three `align-items`
 values, stretch, columns, wrapping, gaps, `order`, `flex-basis` including
 percentages, nesting, the anonymous-box rule, and `box-sizing` for both plain
 boxes and flex items.
+
+## Floats
+
+A float is the one box that is simultaneously out of flow and part of it: it takes
+no space in the block stack, yet the content beside it is shortened so the float is
+not overlapped. That is the whole model, and it is why a float cannot be
+implemented by simply skipping the box.
+
+`FloatContext` holds the floats in force for one block formatting context as a list
+of `FloatBand`s. A band is the float's *margin* box, because its margins are as
+much of an obstacle as its border box, and bands are stored in absolute
+coordinates so no translation is needed to compare them.
+
+The context is deliberately not per-container. Floats belong to a formatting
+context and escape their parent unless the parent establishes one, which is why a
+float in one paragraph shifts the text of the next. `Context::floats` therefore
+points at the nearest enclosing context, and only a box that establishes one gets a
+fresh `FloatContext` of its own.
+
+### Two passes, never both
+
+A container either stacks block children or holds line boxes, and the tree builder
+guarantees it is one or the other. `float` is handled in both passes, because a
+float can be either level:
+
+* **Block-level** floats are placed by `layoutBlockChildren()`, which calls
+  `placeFloat()` at the current `y` and skips the box.
+* **Inline-level** floats — the common case, a floated `<img>` or `<span>` — are
+  taken out of the line by the collection pass in `layoutInlineRun()` and placed
+  just before the line boxes are built, so the first line already knows they are
+  there.
+
+The distinction is load-bearing rather than tidy. A block-level float collected by
+the inline pass as well is placed twice and lands shifted by its own width. The
+guard is `!box->isBlockLevel()` in the inline branch.
+
+### Placing one
+
+`placeFloat()` follows CSS 2.2 §9.5:
+
+1. **Width.** A float shrink-to-fits, so an auto width comes from
+   `shrinkToFitWidth()`. A specified width wins outright — capping it by
+   shrink-to-fit would collapse every `width: 120px` float holding no text to
+   nothing, which is a bug the tests caught. Both branches are then reduced to a
+   border-box width, clamped so the float can never be wider than its containing
+   block leaves once its own margins are taken out.
+2. **Vertical position.** The float drops until it fits beside the floats already
+   in force. Each step moves to `nextBandY()`, the lowest bottom among the floats
+   reaching the current `y` — not the lowest overall, or a float far below would
+   drag ordinary content down with it.
+3. **Horizontal position.** Pinned to the left or right edge of the room found,
+   within the containing block.
+
+### Avoiding one
+
+`spanAt(context, y)` is what makes content flow around a float. It intersects two
+rectangles: the *block's own content box*, and the room the formatting context
+leaves at that `y`. Both halves matter. Using only the flow's edges made a
+`width: 200px` paragraph break its lines against the viewport; using only the
+block's own box would let text run through a float.
+
+`layoutInlineRun()` calls it twice per line: once to decide where the line starts
+and how narrow it is, and once per fragment to decide whether the next word fits.
+`flushLine()` calls it again for the line it is about to place, so a line's origin
+and width come from the span rather than from the container. When nothing fits
+beside a float at all, the line moves to `nextBandY()` rather than breaking into
+zero-width lines.
+
+### `clear`
+
+`clearY(y, clear)` moves a box below the floats the value names — `left`, `right`
+or `both` — considering only floats that extend past `y`, since one already above
+is already cleared. `clear` also ends margin collapsing for that box: the two boxes
+are no longer adjacent, so their margins must not merge.
+
+Note what `clear` does **not** do. It does not contain the floats of the element it
+is set on; it moves that element past floats that precede it. The clearfix idiom
+needs a generated `::after` box for exactly this reason, and
+`tst_layout.cpp` says so in a comment rather than asserting the wrong thing.
+
+### Containing them
+
+A plain block does not contain its floats, so a parent whose only children are
+floated collapses to zero height. That is not a bug to be fixed — it is the
+behaviour that made clearfix necessary, and reproducing it is the point.
+`aFloatDoesNotAddHeightWithoutAFormattingContext()` asserts the zero.
+
+A box that *does* establish a formatting context grows to reach the lowest float
+it holds, which is why `overflow: hidden` and `display: inline-block` are the two
+ways to stop a container collapsing. `establishesFlow` names them: a flex
+container, an inline-block, or a block whose `overflow` is not `visible`.
+
+### Tests
+
+`tst_layout.cpp` covers floats in twelve cases: both edges, shrink-to-fit, text
+avoidance on the first line, a return to full width below the float, two left
+floats side by side, a float dropping when there is no room, `clear` on a sibling,
+containment by `overflow: hidden` and by `inline-block`, the deliberate absence of
+containment without a formatting context, and a float staying inside a narrower
+parent.
+
+Four of those were written against a mutation to check they earn their place:
+removing `clear`, removing float avoidance from `spanAt`, and removing
+containment each make the relevant tests fail.
+
+Two real bugs were found this way. The first was an infinite recursion: a float
+re-appended to the wrong container became its own child, and layout descended into
+it until the stack ran out — visible only as a `SIGSEGV` in a crash report. The
+second was the double placement described above, which showed up as floats landing
+at exactly one width too far right.
 
 ## Positioning
 
@@ -503,7 +613,7 @@ makes clicking text inside a link work.
 
 ## What a reader will notice
 
-* Floats, grid and tables do not affect layout. Flexbox and positioning do.
+* Grid and tables do not affect layout. Flexbox, positioning and floats do.
 * `documentWidth` is `max(viewportWidth, root right edge)`, so a page does not
   scroll horizontally unless a box overflows.
 * Text is measured with platform fonts, so a layout can differ by a pixel or two

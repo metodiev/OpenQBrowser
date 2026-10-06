@@ -1053,6 +1053,10 @@ double LayoutEngine::layoutBlockChildren(Box *box, const Context &context, doubl
         if (!childStyle || !childStyle->generatesBox())
             continue;
 
+        const double childMarginTop = childStyle->marginTop.isAuto()
+            ? 0
+            : childStyle->marginTop.resolve(context.availableWidth);
+
         // An absolutely positioned child is out of flow: it is placed against
         // its containing block after everything else has been laid out, and
         // takes no space here. Skipping it keeps it from shifting its siblings,
@@ -1060,13 +1064,33 @@ double LayoutEngine::layoutBlockChildren(Box *box, const Context &context, doubl
         if (child->isOutOfFlow())
             continue;
 
+        // A float is taken out of flow but still pushes the content that follows
+        // it aside. It is placed here, at the current y, and contributes no
+        // height to the flow - which is exactly why a parent with only floated
+        // children collapses unless it establishes a formatting context.
+        if (childStyle->isFloating() && !child->isText()) {
+            // The float is placed at the flow position, before the collapsed
+            // margin, because its own top margin is inside the band it registers.
+            placeFloat(child, context, y + qMax(collapsedMargin, childMarginTop));
+            continue;
+        }
+
+        // `clear` moves the box below the floats it names, and it also ends the
+        // margin collapsing: the two boxes are no longer adjacent, so their
+        // margins must not merge.
+        if (childStyle->clear != QLatin1String("none") && context.floats) {
+            const double cleared = context.floats->clearY(y + qMax(collapsedMargin, childMarginTop),
+                                                         childStyle->clear);
+            if (cleared > y + qMax(collapsedMargin, childMarginTop)) {
+                y = cleared;
+                collapsedMargin = 0;
+            }
+        }
+
         // Vertical margins between adjacent siblings collapse: the gap between
         // two boxes is the larger of the two margins, never their sum
         // (CSS 2.2 §8.3.1). The gap is therefore computed here, and the child is
         // laid out with no margin added on top of it.
-        const double childMarginTop = childStyle->marginTop.isAuto()
-            ? 0
-            : childStyle->marginTop.resolve(context.availableWidth);
         const double gap = qMax(collapsedMargin, childMarginTop);
 
         // layoutBlock returns the y past the child's own bottom margin, so the
@@ -1121,11 +1145,32 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
     size_t inlineLayoutReplacedIndex = 0;
     double widestReplaced = 0;
 
+    // Floats found among the inline content. The collection pass takes them out
+    // of the line, and they are placed once the lines are about to be built, so
+    // a line beside a floated image starts where the image ends.
+    std::vector<Box *> floatedPointers;
+
     std::function<void(Box *, const css::ComputedStyle *)> collect
         = [&](Box *box, const css::ComputedStyle *inherited) {
               const css::ComputedStyle *style = box->style() ? box->style() : inherited;
               if (!style)
                   return;
+
+              // A float is out of flow even when its element is inline-level,
+              // which is the usual case for a floated image or a floated span.
+              // Collecting it as a fragment would dissolve it into the line and
+              // let the text flow through it, so it is taken out here and pushed
+              // aside onto the float list instead.
+              //
+              // Only an inline-level float is handled here. A block-level float
+              // was already placed by layoutBlockChildren() - one of the two
+              // passes runs, never both - so collecting it here would place it a
+              // second time and shift it by its own width.
+              if (style->isFloating() && !box->isText() && context.floats
+                  && !box->isBlockLevel()) {
+                  floatedPointers.push_back(box);
+                  return;
+              }
 
               // <br> is a forced break; it carries no visible content.
               if (box->element() && box->element()->isTag(QStringLiteral("br"))) {
@@ -1248,6 +1293,11 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
                 continue;
             }
 
+            // A float is collected by the measurement pass instead, since it is
+            // not atomic to a line in the way a replaced box is.
+            if (child->style() && child->style()->isFloating())
+                continue;
+
             if (child->isReplaced() || child->type() == Box::Type::InlineBlock)
                 replacedPointers.push_back(child.get());
             else
@@ -1276,12 +1326,49 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
         }
     }
 
+    // A floated inline element is detached for the same reason: the rebuild
+    // below destroys every child, and a float holds a real subtree.
+    //
+    // Each is put back on the container it came from - recorded before the
+    // detach, because detaching clears the parent pointer. Re-appending to the
+    // wrong box is not a subtle bug: a float that became its own child made
+    // layout recurse into itself until the stack ran out.
+    std::vector<std::unique_ptr<Box>> floatedBoxes;
+    std::vector<Box *> floatedParents;
+    for (Box *box : floatedPointers) {
+        if (Box *parent = box->parent()) {
+            if (std::unique_ptr<Box> owned = parent->detachChild(box)) {
+                floatedParents.push_back(parent);
+                floatedBoxes.push_back(std::move(owned));
+            }
+        }
+    }
+
     container->clearChildren();
 
     for (auto &owned : outOfFlowBoxes)
         container->appendChild(std::move(owned));
 
+    std::vector<Box *> restoredFloats;
+    for (size_t i = 0; i < floatedBoxes.size(); ++i) {
+        restoredFloats.push_back(floatedBoxes[i].get());
+        floatedParents[i]->appendChild(std::move(floatedBoxes[i]));
+    }
+
     // ------------------------------------------------------------ line building
+
+    // A floated inline element is placed before the lines are built, because the
+    // first line has to know it is there: a text line beside a floated image
+    // starts where the image ends. A float from the block pass was already placed
+    // by layoutBlockChildren(), so these are only the ones the collection pass
+    // found among the inline content.
+    //
+    // The box is already a child of this container - the collection pass only
+    // recorded a pointer to it - so placing it here registers its band and gives
+    // it geometry without moving it in the tree.
+    for (Box *floatBox : restoredFloats)
+        placeFloat(floatBox, context, context.contentY);
+
     double y = context.contentY;
     double totalWidth = 0;
     double preferredWidth = 0;
@@ -1305,12 +1392,16 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
             return;
         }
 
+        // A line sits in whatever room the floats leave at its own y, so its
+        // origin and width come from the span rather than from the container.
+        const AvailableSpan lineSpan = spanAt(context, y);
+
         auto lineOwner = std::make_unique<Box>(Box::Type::Line, nullptr, container->style());
         Box *line = container->appendChild(std::move(lineOwner));
 
         // The text fragments on this line are attached to it with absolute
         // geometry, so the painter can draw them directly.
-        double x = context.contentX;
+        double x = lineSpan.x;
         for (int i = lineStartFragment; i < endIndex && i < fragments.size(); ++i) {
             const Fragment &fragment = fragments.at(i);
             if (fragment.breakBefore)
@@ -1356,11 +1447,11 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
             x += fragment.width;
         }
 
-        line->setPosition(context.contentX, y);
+        line->setPosition(lineSpan.x, y);
         // The line box itself is only as wide as its content, which is what the
         // painter and hit testing expect; the container's width is a layout
         // concern, not a property of the line.
-        const double usedWidth = qMin(lineWidth, context.availableWidth);
+        const double usedWidth = qMin(lineWidth, lineSpan.width);
         line->setSize(usedWidth, neededHeight);
         line->setContentBox(QRectF(0, 0, usedWidth, neededHeight));
         totalWidth = qMax(totalWidth, usedWidth);
@@ -1385,7 +1476,24 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
         const double spaceWidth = fragment.spaceBefore
             ? QFontMetricsF(fontFor(fragment.style)).horizontalAdvance(u' ')
             : 0.0;
-        const bool mustWrap = lineWidth > 0 && (lineWidth + spaceWidth + fragment.width) > context.availableWidth;
+
+        // A float narrows the line it overlaps, so the width a line is broken
+        // against is not the container's but whatever room is left beside the
+        // floats. It can also shift the line's start, which is what makes text
+        // sit to the right of a left float.
+        const AvailableSpan span = spanAt(context, y);
+        if (span.width < lineWidth + spaceWidth + fragment.width && lineWidth == 0
+            && context.floats) {
+            // Nothing fits on this line at all beside the float, so the line
+            // starts below it rather than breaking into zero-width lines.
+            const double next = context.floats->nextBandY(y);
+            if (next > y)
+                y = next;
+        }
+
+        const AvailableSpan lineSpan = spanAt(context, y);
+        const bool mustWrap
+            = lineWidth > 0 && (lineWidth + spaceWidth + fragment.width) > lineSpan.width;
 
         if (mustWrap)
             flushLine(i);
@@ -1403,6 +1511,224 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
     Q_UNUSED(widestReplaced);
     Q_UNUSED(totalWidth);
     return y - context.contentY;
+}
+
+// ------------------------------------------------------------------- floats
+//
+// A float is taken out of normal flow but still affects it: the box that
+// follows flows *beside* it rather than through it. That is the whole of the
+// model, and it is why floats cannot be implemented by simply skipping the box.
+//
+// The geometry is tracked as bands rather than as a list of boxes, because what
+// the flow needs to know is only "how much room is there at this y". A band is
+// the float's margin box, since its margins are as much an obstacle as its
+// border box.
+
+void LayoutEngine::FloatContext::spanAt(double y, double contentX, double contentWidth,
+                                        double *leftInset, double *rightLimit) const
+{
+    *leftInset = contentX;
+    *rightLimit = contentX + contentWidth;
+
+    for (const FloatBand &band : bands) {
+        // Only a float that overlaps this y constrains it. A float that ends
+        // above leaves the line untouched, which is what lets text resume at
+        // full width below a floated image.
+        if (y < band.top || y >= band.bottom)
+            continue;
+
+        if (band.isLeft)
+            *leftInset = qMax(*leftInset, band.right);
+        else
+            *rightLimit = qMin(*rightLimit, band.left);
+    }
+
+    // Floats may between them leave nothing, in which case the span collapses to
+    // nothing rather than inverting.
+    if (*rightLimit < *leftInset)
+        *rightLimit = *leftInset;
+}
+
+double LayoutEngine::FloatContext::nextBandY(double y) const
+{
+    // The lowest bottom among floats that reach this y. Not the lowest overall:
+    // a float far below, which a clear would move to, must not drag ordinary
+    // content down with it.
+    double lowest = y;
+    for (const FloatBand &band : bands) {
+        if (y >= band.top && y < band.bottom)
+            lowest = qMax(lowest, band.bottom);
+    }
+    return lowest;
+}
+
+double LayoutEngine::FloatContext::clearY(double y, const QString &clear) const
+{
+    if (clear.isEmpty() || clear == QLatin1String("none"))
+        return y;
+
+    const bool wantLeft = clear == QLatin1String("left") || clear == QLatin1String("both");
+    const bool wantRight = clear == QLatin1String("right") || clear == QLatin1String("both");
+
+    double lowest = y;
+    for (const FloatBand &band : bands) {
+        // Only floats below the current position matter: clear moves a box down
+        // past them, and one already above it is already cleared.
+        if (band.bottom <= y)
+            continue;
+        if ((band.isLeft && wantLeft) || (!band.isLeft && wantRight))
+            lowest = qMax(lowest, band.bottom);
+    }
+    return lowest;
+}
+
+double LayoutEngine::FloatContext::bottom() const
+{
+    double lowest = 0;
+    for (const FloatBand &band : bands)
+        lowest = qMax(lowest, band.bottom);
+    return lowest;
+}
+
+LayoutEngine::AvailableSpan LayoutEngine::spanAt(const Context &context, double y) const
+{
+    // The room a block has is its own content box, whatever the formatting
+    // context's edges are. Returning the flow's edges here would make a
+    // `width: 200px` paragraph break its lines against the viewport.
+    const double boxStart = context.contentX;
+    const double boxEnd = context.contentX + context.availableWidth;
+
+    if (!context.floats)
+        return {boxStart, context.availableWidth};
+
+    double leftInset = 0;
+    double rightLimit = 0;
+    context.floats->spanAt(y, context.flowX, context.flowWidth, &leftInset, &rightLimit);
+
+    // A float narrows a line only where it reaches into the block's own content
+    // box. Intersecting the two is what makes a float outside a nested block
+    // leave that block alone while still pushing its siblings' text aside.
+    const double start = qMax(boxStart, leftInset);
+    const double end = qMin(boxEnd, rightLimit);
+    return {start, qMax(0.0, end - start)};
+}
+
+void LayoutEngine::placeFloat(Box *box, const Context &context, double y)
+{
+    if (!context.floats) {
+        // A float only has meaning inside a block formatting context. Without
+        // one there is nothing to avoid it, so it is laid out in flow rather
+        // than silently dropped.
+        return;
+    }
+
+    const css::ComputedStyle *style = box->style();
+    if (!style)
+        return;
+
+    const bool isLeft = style->floatSide != QLatin1String("right");
+
+    // A float is positioned against its containing block's content box, not
+    // against the formatting context's edges. The two differ whenever the float
+    // sits inside a narrower box: a right float in a 300px child must land on
+    // that child's right edge, not on the page's.
+    const double containerStart = context.contentX;
+    const double containerEnd = context.contentX + context.availableWidth;
+
+    // A float never keeps an auto margin: there is no free space to absorb,
+    // because the float shrink-to-fits.
+    const auto marginOf = [&](const css::LengthOrAuto &length) {
+        return length.isAuto() ? 0.0 : length.resolve(context.availableWidth);
+    };
+    const double marginLeft = marginOf(style->marginLeft);
+    const double marginRight = marginOf(style->marginRight);
+    const double marginTop = marginOf(style->marginTop);
+
+    // The float itself is the obstacle, so it is laid out as though no float
+    // were in force; otherwise it would avoid itself.
+    Context floatContext = context;
+    floatContext.floats = nullptr;
+
+    // shrinkToFitWidth() returns an *outer* width: it measures the content and
+    // adds the padding and border itself. It is the used width only when the
+    // float has no width of its own - an empty floated div has a shrink-to-fit
+    // width of zero, so capping a specified width by it would collapse every
+    // `width: 120px` float to nothing.
+    //
+    // resolveUsedWidth() returns a *content* width, so the padding and border
+    // are added back here to leave both branches describing the same thing: the
+    // width the float's border box will have.
+    const Edges floatPadding = paddingOf(box, context.availableWidth);
+    const Edges floatBorder = borderOf(box);
+    const double desiredWidth = style->width.isAuto()
+        ? shrinkToFitWidth(box, floatContext)
+        : resolveUsedWidth(box, context.availableWidth, nullptr) + floatPadding.left
+            + floatPadding.right + floatBorder.left + floatBorder.right;
+
+    // It can never be wider than its containing block leaves once its own
+    // margins are taken out.
+    const double room = qMax(0.0, containerEnd - containerStart - marginLeft - marginRight);
+    const double borderBoxWidth = qMax(0.0, qMin(desiredWidth, room));
+
+    // The room beside the floats already in force, clipped to the containing
+    // block: leaving the block's own box would let a float escape it.
+    const auto roomAt = [&](double atY, double *start, double *limit) {
+        double flowLeft = 0;
+        double flowRight = 0;
+        context.floats->spanAt(atY, context.flowX, context.flowWidth, &flowLeft, &flowRight);
+        *start = qMax(containerStart, flowLeft);
+        *limit = qMin(containerEnd, flowRight);
+    };
+
+    double start = 0;
+    double limit = 0;
+
+    // The float drops until it fits beside the floats already there. A previous
+    // float that occupies the full width leaves no room at any y until its
+    // bottom, which is what puts the second float below the first.
+    double placedY = qMax(y, context.contentY);
+    const double needed = borderBoxWidth + marginLeft + marginRight;
+    for (int guard = 0; guard < 256; ++guard) {
+        roomAt(placedY, &start, &limit);
+        if (limit - start >= needed)
+            break;
+        const double next = context.floats->nextBandY(placedY);
+        if (next <= placedY)
+            break;
+        placedY = next;
+    }
+    roomAt(placedY, &start, &limit);
+
+    Context boxContext = context;
+    // The float's own containing block for its content is its own content box,
+    // which starts at the containing block's start and is as wide as itself less
+    // its own margins, padding and border.
+    boxContext.contentX = containerStart;
+    boxContext.contentY = placedY + marginTop;
+    boxContext.availableWidth = qMax(0.0, borderBoxWidth - floatPadding.left - floatPadding.right
+                                              - floatBorder.left - floatBorder.right);
+    boxContext.floats = nullptr;
+
+    layoutBlock(box, boxContext, placedY + marginTop);
+    // layoutBlock() resolved the width from the style a second time, so the
+    // border box is set here to the width the float was measured at. Without
+    // this a shrink-to-fit float whose content is wider than the room available
+    // would paint outside the band registered for it.
+    box->setSize(borderBoxWidth, box->height());
+
+    const double x = isLeft ? start + marginLeft : limit - marginRight - borderBoxWidth;
+    box->setPosition(x, placedY + marginTop);
+
+    // The band is the float's margin box, because its margins are as much of an
+    // obstacle as its border box is.
+    FloatBand band;
+    band.box = box;
+    band.isLeft = isLeft;
+    band.left = isLeft ? start : x - marginLeft;
+    band.right = isLeft ? x + borderBoxWidth + marginRight : limit;
+    band.top = placedY;
+    band.bottom = placedY + box->height() + marginTop;
+    context.floats->bands.push_back(band);
 }
 
 double LayoutEngine::layoutBlock(Box *box, const Context &context, double borderTopY)
@@ -1472,12 +1798,38 @@ double LayoutEngine::layoutBlock(Box *box, const Context &context, double border
     const double contentX = context.contentX + marginLeft + border.left + padding.left;
     const double contentY = borderTopY + border.top + padding.top;
 
-    // ------------------------------------------------------------ children
+    // ------------------------------------------------- formatting context
+    //
+    // Floats belong to a block formatting context and escape their parent unless
+    // the parent establishes one of its own. A block establishes a new one when
+    // it is a flex container, or when it is scrollable - `overflow` other than
+    // `visible` - and that is what makes `overflow: hidden` the classic way to
+    // stop a container collapsing around its floated children.
+    //
+    // A box that does not establish one shares its parent's, which is why a
+    // float in one paragraph still pushes the next paragraph's text aside.
+    FloatContext ownFloats;
+    const bool establishesFlow = style->isFlexContainer()
+        || box->type() == Box::Type::InlineBlock
+        || (style->overflow != QLatin1String("visible") && box->type() == Box::Type::Block);
+
     Context inner;
     inner.depth = context.depth + 1;
     inner.contentX = contentX;
     inner.contentY = contentY;
     inner.availableWidth = contentWidth;
+    inner.floats = establishesFlow ? &ownFloats : context.floats;
+    inner.flowX = establishesFlow ? contentX : context.flowX;
+    inner.flowWidth = establishesFlow ? contentWidth : context.flowWidth;
+
+    // The root has no enclosing context, so it is one: without this a float at
+    // the top of a document would have nothing to be registered in and every
+    // float on the page would be inert.
+    if (!inner.floats) {
+        inner.floats = &ownFloats;
+        inner.flowX = contentX;
+        inner.flowWidth = contentWidth;
+    }
 
     // A definite height is passed down, because a child can need it: a column
     // flex container distributes its items along the vertical axis, and a
@@ -1536,6 +1888,13 @@ double LayoutEngine::layoutBlock(Box *box, const Context &context, double border
         else
             contentHeight = layoutInlineRun(box, inner);
     }
+
+    // A formatting context contains its floats: the height of the box grows to
+    // reach the lowest float it holds, so `overflow: hidden` around floated
+    // children makes the parent tall enough for them. This is the mechanism that
+    // makes the classic clearfix unnecessary.
+    if (establishesFlow && !ownFloats.bands.empty())
+        contentHeight = qMax(contentHeight, ownFloats.bottom() - contentY);
 
     // A specified height wins over the content height (CSS 2.2 §10.6.3).
     // resolveUsedHeight() already reports a content height: it subtracts the

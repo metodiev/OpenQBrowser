@@ -115,6 +115,20 @@ private slots:
     void paintsBackgroundColours();
     void paintsTextPixels();
     void cullsOffscreenContent();
+
+    // Floats.
+    void placesAFloatAtTheLeftEdge();
+    void placesAFloatAtTheRightEdge();
+    void shrinksAFloatToItsContent();
+    void flowsTextBesideAFloat();
+    void resumesFullWidthBelowAFloat();
+    void stacksTwoLeftFloatsSideBySide();
+    void movesAFloatBelowWhenThereIsNoRoom();
+    void clearPushesABoxBelowFloats();
+    void overflowHiddenContainsFloats();
+    void aFloatDoesNotAddHeightWithoutAFormattingContext();
+    void anInlineBlockContainsItsFloats();
+    void keepsAFloatInsideItsParent();
 };
 
 void LayoutTest::buildsBoxesForElements()
@@ -1250,6 +1264,293 @@ void LayoutTest::paintsPositiveZIndexOnTop()
     const QRgb top = sampleColourAt(stacked, 50, 30);
     QVERIFY2(qRed(top) > 200 && qGreen(top) < 60,
              qPrintable(QStringLiteral("the higher z-index should be on top")));
+}
+
+// ------------------------------------------------------------------- floats
+//
+// A float is out of flow but still affects it: the content that follows flows
+// beside it rather than through it. These tests pin the four things that makes
+// matter: where the float goes, how the text avoids it, what `clear` does, and
+// whether the parent stays tall enough to hold it.
+
+void LayoutTest::placesAFloatAtTheLeftEdge()
+{
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #f { float: left; width: 120px; height: 40px; }
+          #after { height: 10px; }
+        </style>
+        <div id="container"><div id="f"></div><div id="after"></div></div>)"));
+
+    renderer::Box *box = page.boxForId(QStringLiteral("f"));
+    QVERIFY(box != nullptr);
+
+    // Flush with the content edge, not indented.
+    QCOMPARE(box->borderBox().x(), 0.0);
+    QCOMPARE(box->borderBox().width(), 120.0);
+
+    // The float leaves the flow, so the sibling after it starts at the top
+    // rather than below the float.
+    renderer::Box *after = page.boxForId(QStringLiteral("after"));
+    QVERIFY(after != nullptr);
+    QCOMPARE(after->borderBox().y(), 0.0);
+}
+
+void LayoutTest::placesAFloatAtTheRightEdge()
+{
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #f { float: right; width: 120px; height: 40px; }
+        </style>
+        <div id="container"><div id="f"></div></div>)"), 500);
+
+    renderer::Box *box = page.boxForId(QStringLiteral("f"));
+    QVERIFY(box != nullptr);
+
+    // Its right edge sits on the container's right edge.
+    QCOMPARE(box->borderBox().right(), 500.0);
+    QCOMPARE(box->borderBox().width(), 120.0);
+}
+
+void LayoutTest::shrinksAFloatToItsContent()
+{
+    // A float with no width shrinks to fit, which is why a floated label is only
+    // as wide as what it holds.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; font-size: 16px; }
+          #f { float: left; padding: 0 10px; }
+        </style>
+        <div id="container"><div id="f">abc</div></div>)"));
+
+    renderer::Box *box = page.boxForId(QStringLiteral("f"));
+    QVERIFY(box != nullptr);
+
+    // Narrower than the container, and wide enough for the padding.
+    QVERIFY2(box->borderBox().width() < 800.0,
+             qPrintable(QStringLiteral("expected a shrunk float, got %1")
+                            .arg(box->borderBox().width())));
+    QVERIFY2(box->borderBox().width() >= 20.0,
+             qPrintable(QStringLiteral("expected the padding to be included, got %1")
+                            .arg(box->borderBox().width())));
+}
+
+void LayoutTest::flowsTextBesideAFloat()
+{
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; font-size: 16px; }
+          #f { float: left; width: 150px; height: 200px; }
+        </style>
+        <div id="container">
+          <div id="f"></div>
+          <p id="text">Text that must begin to the right of the floated box.</p>
+        </div>)"));
+
+    renderer::Box *floatBox = page.boxForId(QStringLiteral("f"));
+    QVERIFY(floatBox != nullptr);
+    QCOMPARE(floatBox->borderBox().x(), 0.0);
+    QCOMPARE(floatBox->borderBox().width(), 150.0);
+
+    // The line starts where the float ends and is narrower by its width.
+    QVERIFY2(!page.result.lineBoxes.empty(), "the text produced no line box");
+    renderer::Box *line = page.result.lineBoxes.front();
+    QVERIFY2(qFuzzyCompare(line->borderBox().x(), 150.0),
+             qPrintable(QStringLiteral("expected the line to start at 150, got %1")
+                            .arg(line->borderBox().x())));
+    QVERIFY2(line->borderBox().width() <= 650.0,
+             qPrintable(QStringLiteral("expected the line to be narrowed, got %1")
+                            .arg(line->borderBox().width())));
+}
+
+void LayoutTest::resumesFullWidthBelowAFloat()
+{
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; font-size: 16px; }
+          #f { float: left; width: 150px; height: 40px; }
+        </style>
+        <div id="container">
+          <div id="f"></div>
+          <p id="text">This paragraph is long enough to wrap onto a second line, and that
+             second line should be back at the full width once it is past the float.</p>
+        </div>)"));
+
+    QVERIFY(page.result.lineBoxes.size() >= 2);
+
+    // The first line is beside the float...
+    QVERIFY2(qFuzzyCompare(page.result.lineBoxes.front()->borderBox().x(), 150.0),
+             "the first line should be pushed right by the float");
+
+    // ...and a later one, below it, is not. That is what makes text wrap around
+    // a floated image rather than being indented throughout.
+    bool foundFullWidth = false;
+    for (renderer::Box *line : page.result.lineBoxes) {
+        if (line->borderBox().y() >= 40.0 && line->borderBox().x() < 1.0)
+            foundFullWidth = true;
+    }
+    QVERIFY2(foundFullWidth, "no line returned to the full width below the float");
+}
+
+void LayoutTest::stacksTwoLeftFloatsSideBySide()
+{
+    // Two left floats sit beside each other rather than overlapping or stacking,
+    // which is what a row of floated thumbnails depends on.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          .f { float: left; width: 100px; height: 50px; }
+        </style>
+        <div id="container">
+          <div id="a" class="f"></div><div id="b" class="f"></div>
+        </div>)"));
+
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY(a != nullptr && b != nullptr);
+
+    QCOMPARE(a->borderBox().x(), 0.0);
+    QCOMPARE(b->borderBox().x(), 100.0);
+    QCOMPARE(a->borderBox().y(), b->borderBox().y());
+}
+
+void LayoutTest::movesAFloatBelowWhenThereIsNoRoom()
+{
+    // The second float does not fit beside the first, so it drops below it
+    // instead of overflowing or overlapping.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          .f { float: left; width: 70%; height: 50px; }
+        </style>
+        <div id="container">
+          <div id="a" class="f"></div><div id="b" class="f"></div>
+        </div>)"), 400);
+
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY(a != nullptr && b != nullptr);
+
+    QCOMPARE(a->borderBox().y(), 0.0);
+    QVERIFY2(qFuzzyCompare(b->borderBox().y(), 50.0),
+             qPrintable(QStringLiteral("expected the second float at y=50, got %1")
+                            .arg(b->borderBox().y())));
+}
+
+void LayoutTest::clearPushesABoxBelowFloats()
+{
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #f { float: left; width: 100px; height: 80px; }
+          #cleared { clear: left; height: 10px; }
+          #uncleared { height: 10px; }
+        </style>
+        <div id="container">
+          <div id="f"></div>
+          <div id="uncleared"></div>
+          <div id="cleared"></div>
+        </div>)"));
+
+    renderer::Box *uncleared = page.boxForId(QStringLiteral("uncleared"));
+    renderer::Box *cleared = page.boxForId(QStringLiteral("cleared"));
+    QVERIFY(uncleared != nullptr && cleared != nullptr);
+
+    // Without clear, the box sits beside the float at the top.
+    QCOMPARE(uncleared->borderBox().y(), 0.0);
+
+    // With it, the box is pushed below the float's bottom edge.
+    QVERIFY2(cleared->borderBox().y() >= 80.0,
+             qPrintable(QStringLiteral("expected clear to reach y=80, got %1")
+                            .arg(cleared->borderBox().y())));
+}
+
+void LayoutTest::overflowHiddenContainsFloats()
+{
+    // `overflow: hidden` establishes a block formatting context, so the parent
+    // grows to hold its floated child instead of collapsing to nothing.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #container { overflow: hidden; }
+          #f { float: left; width: 100px; height: 60px; }
+        </style>
+        <div id="container"><div id="f"></div></div>)"));
+
+    renderer::Box *container = page.boxForId(QStringLiteral("container"));
+    QVERIFY(container != nullptr);
+
+    QVERIFY2(container->borderBox().height() >= 60.0,
+             qPrintable(QStringLiteral("expected the container to contain the float, got %1")
+                            .arg(container->borderBox().height())));
+}
+
+void LayoutTest::aFloatDoesNotAddHeightWithoutAFormattingContext()
+{
+    // The other half of the rule: a plain block does not contain its floats, so
+    // a parent with only floated children collapses to zero height. That is the
+    // behaviour that made clearfix necessary, and reproducing it is the point.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #f { float: left; width: 100px; height: 60px; }
+        </style>
+        <div id="container"><div id="f"></div></div>)"));
+
+    renderer::Box *container = page.boxForId(QStringLiteral("container"));
+    QVERIFY(container != nullptr);
+
+    QCOMPARE(container->borderBox().height(), 0.0);
+}
+
+void LayoutTest::anInlineBlockContainsItsFloats()
+{
+    // `display: inline-block` establishes a block formatting context, so it
+    // contains its floated children. This is the other way to stop a container
+    // collapsing, and unlike `overflow: hidden` it clips nothing.
+    //
+    // Note what is deliberately *not* asserted: `clear` on a container does not
+    // contain that container's own floats. `clear` moves an element past floats
+    // that precede it, which is why the clearfix idiom needs an ::after box
+    // rather than a property on the parent.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #container { display: inline-block; }
+          #f { float: left; width: 100px; height: 60px; }
+        </style>
+        <div id="outer"><div id="container"><div id="f"></div></div></div>)"));
+
+    renderer::Box *container = page.boxForId(QStringLiteral("container"));
+    QVERIFY(container != nullptr);
+
+    QVERIFY2(container->borderBox().height() >= 60.0,
+             qPrintable(QStringLiteral("expected the inline-block to contain the float, got %1")
+                            .arg(container->borderBox().height())));
+}
+
+void LayoutTest::keepsAFloatInsideItsParent()
+{
+    // A float must be placed within the room its formatting context gives it, so
+    // a container narrower than the viewport constrains the float rather than
+    // letting it escape to the page edge.
+    Page page(QStringLiteral(R"(
+        <style>
+          body { margin: 0; }
+          #container { width: 300px; margin-left: 100px; }
+          #f { float: right; width: 80px; height: 40px; }
+        </style>
+        <div id="container"><div id="f"></div></div>)"), 800);
+
+    renderer::Box *box = page.boxForId(QStringLiteral("f"));
+    QVERIFY(box != nullptr);
+
+    // The right edge is the container's content edge, at 100 + 300.
+    QVERIFY2(qFuzzyCompare(box->borderBox().right(), 400.0),
+             qPrintable(QStringLiteral("expected the float's right edge at 400, got %1")
+                            .arg(box->borderBox().right())));
 }
 
 QTEST_MAIN(LayoutTest)
