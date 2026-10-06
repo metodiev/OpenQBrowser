@@ -162,10 +162,22 @@ struct ComputedStyle
     LengthOrAuto paddingBottom;
     LengthOrAuto paddingLeft;
 
+    // ------------------------------------------------------- positioning
+    //
+    // `top` and `left` are the modern logical spellings of what CSS 2.2 called
+    // `top` and `left`; `right` and `bottom` are the other two edges. Which of
+    // them are read depends on the position value, because a positioned box is
+    // pinned by whichever offsets it was given.
     LengthOrAuto top;
     LengthOrAuto right;
     LengthOrAuto bottom;
     LengthOrAuto left;
+
+    /// The stacking level. Only meaningful for a positioned box; `auto` is
+    /// stored as 0 with `hasZIndex` false, because an auto level is treated as
+    /// zero for ordering but does not create a stacking context.
+    int zIndex = 0;
+    bool hasZIndex = false;
 
     // ------------------------------------------------------- border
     QString borderTopStyle = QStringLiteral("none");
@@ -242,6 +254,11 @@ struct ComputedStyle
     {
         return position == QLatin1String("absolute") || position == QLatin1String("fixed");
     }
+
+    /// True for any position other than static, which is what decides whether
+    /// the offsets apply and whether the box establishes a containing block for
+    /// its absolutely positioned descendants.
+    bool isPositioned() const { return position != QLatin1String("static"); }
 
     /// The element's own text colour, used to resolve currentColor.
     QColor effectiveTextColor() const { return color; }

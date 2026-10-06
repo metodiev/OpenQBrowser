@@ -34,6 +34,7 @@ What works today:
 | DOM | Element, text and comment nodes with attributes and classes |
 | CSS | Tokenizer, selectors with specificity, the cascade, media queries |
 | Rendering | Block, inline and flex layout, margin collapsing, box-sizing, painting, images |
+| Positioning | `relative`, `absolute`, `fixed` and `sticky`, with offsets and `z-index` |
 | JavaScript | QuickJS embedded: the DOM bindings, events and timers; inline, external, `defer` and `async` scripts |
 | Browser | Tabs, back/forward history, bookmarks, built-in `about:` pages |
 | Testing | Eleven test suites, all passing |
@@ -43,8 +44,7 @@ What does not work yet, and what you will observe:
 | Area | What happens |
 | --- | --- |
 | Modules, `fetch` | `<script type="module">` is skipped, and `fetch`/`XMLHttpRequest` are absent. See [architecture/javascript.md](./architecture/javascript.md). |
-| CSS grid | `display: grid` is recognised but laid out as blocks. Flexbox works. |
-| Absolute positioning | `position: absolute` and `fixed` are parsed but the element stays in flow. |
+| Floats and CSS grid | `float` has no effect, and `display: grid` is laid out as blocks. Flexbox and positioning work. |
 | Forms | Rendered and styled, but nothing is submitted. |
 | Cookies, cache | Not implemented; nothing is stored between runs. |
 | Sandboxing | No process isolation or site isolation. |

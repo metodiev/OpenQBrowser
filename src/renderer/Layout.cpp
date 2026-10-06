@@ -292,6 +292,13 @@ double LayoutEngine::shrinkToFitWidth(Box *box, const Context &context)
         if (!node)
             return;
 
+        // An out-of-flow child takes no space, so it contributes nothing to a
+        // shrink-to-fit width. Without this a positioned dropdown would widen the
+        // menu it hangs from, which is the opposite of what absolute positioning
+        // is for.
+        if (node != box && node->isOutOfFlow())
+            return;
+
         if (node->isText()) {
             const css::ComputedStyle *style = node->style() ? node->style() : box->style();
             const QFont font = fontFor(style);
@@ -804,7 +811,7 @@ double LayoutEngine::layoutFlexChildren(Box *box, const Context &context)
                         sized.width = css::LengthOrAuto::pixels(crossConstraint);
                 }
             }
-            item->box->setStyle(&sized);
+            item->box->setStyle(arenaStyle(sized));
 
             layoutBlock(item->box, itemContext, 0);
 
@@ -970,7 +977,7 @@ double LayoutEngine::layoutFlexChildren(Box *box, const Context &context)
                             stretched.height = css::LengthOrAuto::pixels(item->crossSize);
                         else
                             stretched.width = css::LengthOrAuto::pixels(item->crossSize);
-                        item->box->setStyle(&stretched);
+                        item->box->setStyle(arenaStyle(stretched));
 
                         layoutBlock(item->box, stretchContext, 0);
 
@@ -1044,6 +1051,13 @@ double LayoutEngine::layoutBlockChildren(Box *box, const Context &context, doubl
 
         const css::ComputedStyle *childStyle = child->style();
         if (!childStyle || !childStyle->generatesBox())
+            continue;
+
+        // An absolutely positioned child is out of flow: it is placed against
+        // its containing block after everything else has been laid out, and
+        // takes no space here. Skipping it keeps it from shifting its siblings,
+        // and keeps its margins out of the collapsing calculation.
+        if (child->isOutOfFlow())
             continue;
 
         // Vertical margins between adjacent siblings collapse: the gap between
@@ -1200,8 +1214,15 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
                   return;
               }
 
-              for (const auto &child : box->children())
+              for (const auto &child : box->children()) {
+                  // An out-of-flow child takes no space in the line and is laid
+                  // out separately, so neither it nor its content is measured
+                  // here. Measuring it made a positioned dropdown's text add a
+                  // line to the box it hangs from.
+                  if (child->isOutOfFlow())
+                      continue;
                   collect(child.get(), style);
+              }
           };
 
     collect(container, container->style());
@@ -1211,9 +1232,22 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
     // unpositioned text boxes at the container's origin for the painter to draw,
     // so they are released below. Replaced boxes are the exception: they hold
     // real content and are re-attached afterwards, in place.
+    // The children that have to survive the rebuild below: replaced and
+    // inline-block boxes, which hold real content the lines only reference by
+    // index, and absolutely positioned boxes, which never took part in a line at
+    // all and are laid out separately once the whole tree has its geometry.
     std::vector<Box *> replacedPointers;
+    std::vector<Box *> outOfFlowPointers;
+
     std::function<void(Box *)> findReplaced = [&](Box *parent) {
         for (const auto &child : parent->children()) {
+            // An out-of-flow child contributes nothing to its parent's line, and
+            // is kept aside so the rebuild below does not destroy it.
+            if (child->isOutOfFlow()) {
+                outOfFlowPointers.push_back(child.get());
+                continue;
+            }
+
             if (child->isReplaced() || child->type() == Box::Type::InlineBlock)
                 replacedPointers.push_back(child.get());
             else
@@ -1229,7 +1263,23 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
                 replacedBoxes.push_back(std::move(owned));
         }
     }
+
+    // An out-of-flow box never took part in a line, so it is detached and put
+    // back rather than being destroyed by the rebuild below. Without this an
+    // absolutely positioned box inside a container with inline content lost its
+    // own subtree and was left with no height.
+    std::vector<std::unique_ptr<Box>> outOfFlowBoxes;
+    for (Box *box : outOfFlowPointers) {
+        if (Box *parent = box->parent()) {
+            if (std::unique_ptr<Box> owned = parent->detachChild(box))
+                outOfFlowBoxes.push_back(std::move(owned));
+        }
+    }
+
     container->clearChildren();
+
+    for (auto &owned : outOfFlowBoxes)
+        container->appendChild(std::move(owned));
 
     // ------------------------------------------------------------ line building
     double y = context.contentY;
@@ -1468,9 +1518,12 @@ double LayoutEngine::layoutBlock(Box *box, const Context &context, double border
         // The container either stacks block children or holds line boxes, never
         // both: the tree builder wraps mixed content in anonymous blocks. Doing
         // the work twice would add every list marker twice.
+        // An out-of-flow child is laid out by the positioned pass and adds no
+        // height here, so a container whose only block-level child is out of
+        // flow falls through to the inline path and sizes from its text.
         bool hasBlockChild = false;
         for (const auto &child : box->children()) {
-            if (child->isBlockLevel())
+            if (child->isBlockLevel() && !child->isOutOfFlow())
                 hasBlockChild = true;
         }
 
@@ -1503,14 +1556,275 @@ double LayoutEngine::layoutBlock(Box *box, const Context &context, double border
     box->setSize(borderBoxWidth, borderBoxHeight);
     box->setContentBox(QRectF(0, 0, contentWidth, contentHeight));
 
+    // A relative offset is applied once the box has its final geometry, and the
+    // value returned below is computed from the un-displaced position, so the
+    // flow around the box is untouched. That is what separates relative from
+    // absolute positioning: the space it would have used stays reserved.
+    applyRelativeOffset(box);
+
     // The bottom margin collapses with the parent's, so it is not part of the
     // height returned to the caller; the caller adds the collapsed amount.
     return borderTopY + borderBoxHeight + trailingMargin;
 }
 
+// --------------------------------------------------------------- positioning
+
+bool LayoutEngine::relativeOffsetFor(const Box *box, double containingBlockWidth,
+                                     double containingBlockHeight, double *dx, double *dy) const
+{
+    const css::ComputedStyle *style = box->style();
+    if (!style || style->position != QLatin1String("relative"))
+        return false;
+
+    // Only the properties the author actually wrote displace the box, and each
+    // axis is decided on its own: `left` wins over `right`, `top` over `bottom`,
+    // which is the CSS 2.2 rule for over-constrained offsets.
+    const bool hasLeft = !style->left.isAuto();
+    const bool hasRight = !style->right.isAuto();
+    const bool hasTop = !style->top.isAuto();
+    const bool hasBottom = !style->bottom.isAuto();
+
+    if (!hasLeft && !hasRight && !hasTop && !hasBottom)
+        return false;
+
+    double localX = 0;
+    if (hasLeft)
+        localX = style->left.resolve(containingBlockWidth);
+    else if (hasRight)
+        localX = -style->right.resolve(containingBlockWidth);
+
+    double localY = 0;
+    if (hasTop)
+        localY = style->top.resolve(containingBlockHeight);
+    else if (hasBottom)
+        localY = -style->bottom.resolve(containingBlockHeight);
+
+    *dx = localX;
+    *dy = localY;
+    return true;
+}
+
+void LayoutEngine::applyRelativeOffset(Box *box)
+{
+    // A percentage offset on a relatively positioned box resolves against the
+    // containing block's width for both axes, which is the CSS 2.2 rule that
+    // surprises people: `top: 50%` of a 800px-wide block is 400px, not half its
+    // height.
+    Box *containing = box->containingBlock();
+    const double width = containing ? containing->contentBox().width() : m_viewportWidth;
+    const double height = containing ? containing->contentBox().height() : m_viewportHeight;
+
+    double dx = 0;
+    double dy = 0;
+    if (!relativeOffsetFor(box, width, height, &dx, &dy))
+        return;
+
+    // The displacement carries the subtree, and it happens after the box's own
+    // height was reported to its parent, so a relative offset never disturbs the
+    // flow around it. That is the whole difference between relative and
+    // absolute positioning.
+    box->translate(dx, dy);
+}
+
+void LayoutEngine::layoutAbsolutelyPositioned(Box *box, int depth)
+{
+    const css::ComputedStyle *style = box->style();
+    if (!style)
+        return;
+
+    // The containing block is the padding box of the nearest positioned
+    // ancestor, or the viewport when there is none. For a `fixed` box the
+    // viewport always applies, because fixed positioning is relative to the
+    // viewport by definition.
+    Box *ancestor = style->position == QLatin1String("fixed") ? nullptr : box->positionedAncestor();
+
+    // The area the box is placed inside. For an ancestor this is its padding
+    // box, which is what `top: 0` is measured from.
+    // A fixed box is always placed against the viewport, and so is an absolute
+    // box with no positioned ancestor. A percentage width or height then
+    // resolves against the viewport, which is what makes
+    // `position: fixed; width: 100%; height: 100%` fill the screen.
+    const QRectF containingRect = ancestor
+        ? ancestor->paddingBox()
+        : QRectF(0.0, 0.0, m_viewportWidth,
+                 m_viewportHeight > 0 ? m_viewportHeight : m_viewportWidth);
+
+    // The offsets, resolved against the containing block's size.
+    const bool hasLeft = !style->left.isAuto();
+    const bool hasRight = !style->right.isAuto();
+    const bool hasTop = !style->top.isAuto();
+    const bool hasBottom = !style->bottom.isAuto();
+
+    const Edges padding = paddingOf(box, containingRect.width());
+    const Edges border = borderOf(box);
+    const double paddingBorderX = padding.left + padding.right + border.left + border.right;
+    const double paddingBorderY = padding.top + padding.bottom + border.top + border.bottom;
+
+    /// The height the box will be given, or -1 when it sizes from its content.
+    /// It is settled before the layout because a percentage height has to be
+    /// resolved against the containing block, and a box pinned by both `top` and
+    /// `bottom` takes the distance between them.
+    double claimedHeight = -1;
+
+    // ------------------------------------------------------------- width
+    //
+    // A box pinned on both sides takes the distance between them, which is how
+    // `left: 0; right: 0` makes a full-width overlay. Otherwise it shrinks to
+    // fit its content, which is the other half of what absolute positioning is
+    // used for.
+    bool widthAuto = style->width.isAuto();
+    double contentWidth = 0;
+    bool widthFromOffsets = false;
+
+    if (!widthAuto) {
+        contentWidth = style->width.resolve(containingRect.width());
+        if (style->boxSizing == QLatin1String("border-box"))
+            contentWidth -= paddingBorderX;
+
+        if (!style->height.isAuto() && style->height.isPercentage() && claimedHeight < 0)
+            claimedHeight = style->height.resolve(containingRect.height());
+    } else if (hasLeft && hasRight) {
+        const double leftOffset = style->left.resolve(containingRect.width());
+        const double rightOffset = style->right.resolve(containingRect.width());
+        contentWidth = containingRect.width() - leftOffset - rightOffset - paddingBorderX;
+        widthFromOffsets = true;
+    } else {
+        // Shrink to fit: the widest line the content would produce, clamped to
+        // the containing block. An absolutely positioned box never fills its
+        // container the way a block-level one would.
+        const double available = qMax(0.0, containingRect.width() - paddingBorderX);
+        Context measuring;
+        measuring.depth = 0;
+        measuring.contentX = 0;
+        measuring.contentY = 0;
+        measuring.availableWidth = available;
+        measuring.availableHeight = -1;
+        contentWidth = shrinkToFitWidth(box, measuring);
+        widthAuto = true;
+    }
+
+    contentWidth = qMax(0.0, contentWidth);
+
+    if (!style->minWidth.isAuto())
+        contentWidth = qMax(contentWidth, style->minWidth.resolve(containingRect.width())
+                                             - (style->boxSizing == QLatin1String("border-box")
+                                                    ? paddingBorderX
+                                                    : 0.0));
+    if (!style->maxWidth.isAuto())
+        contentWidth = qMin(contentWidth, style->maxWidth.resolve(containingRect.width())
+                                             - (style->boxSizing == QLatin1String("border-box")
+                                                    ? paddingBorderX
+                                                    : 0.0));
+
+    // ------------------------------------------------------------- layout
+    //
+    // A box pinned by both `top` and `bottom` takes the distance between them,
+    // which is how a panel is stretched to a height it does not state.
+    if (hasTop && hasBottom && style->height.isAuto()) {
+        const double topOffset = style->top.resolve(containingRect.height());
+        const double bottomOffset = style->bottom.resolve(containingRect.height());
+        claimedHeight = qMax(0.0, containingRect.height() - topOffset - bottomOffset
+                                      - paddingBorderY);
+    }
+
+    Context abs;
+    abs.depth = depth;
+    abs.contentX = 0;
+    abs.contentY = 0;
+    abs.availableWidth = contentWidth;
+    abs.availableHeight = claimedHeight >= 0 ? claimedHeight : -1;
+
+    // The style is overridden for the duration so that layoutBlock uses the
+    // width this pass resolved rather than re-deriving it, exactly as the flex
+    // item path does.
+    const css::ComputedStyle *original = box->style();
+    css::ComputedStyle sized = *original;
+    sized.boxSizing = QStringLiteral("content-box");
+    sized.width = css::LengthOrAuto::pixels(contentWidth);
+    sized.marginLeft = css::LengthOrAuto::pixels(0);
+    sized.marginRight = css::LengthOrAuto::pixels(0);
+    if (claimedHeight >= 0)
+        sized.height = css::LengthOrAuto::pixels(claimedHeight);
+
+    // The copy is kept in the arena because the boxes built during this layout -
+    // line boxes in particular - hold the style pointer they were made with.
+    box->setStyle(arenaStyle(sized));
+
+    layoutBlock(box, abs, 0);
+
+    box->setStyle(original);
+
+    const double borderBoxWidth = box->borderBox().width();
+    const double borderBoxHeight = box->borderBox().height();
+
+    // ----------------------------------------------------------- position
+    //
+    // Horizontal first: `left` wins when both are given, which is the CSS 2.2
+    // rule for an over-constrained box. When neither is given the box stays at
+    // its static position, which is where normal flow would have put it; the
+    // static position is approximated by the containing block's content edge,
+    // since the box never took part in flow.
+    double x = containingRect.x();
+    if (hasLeft)
+        x = containingRect.x() + style->left.resolve(containingRect.width());
+    else if (hasRight)
+        x = containingRect.right() - style->right.resolve(containingRect.width())
+            - borderBoxWidth;
+
+    double y = containingRect.y();
+    if (hasTop)
+        y = containingRect.y() + style->top.resolve(containingRect.height());
+    else if (hasBottom)
+        y = containingRect.bottom() - style->bottom.resolve(containingRect.height())
+            - borderBoxHeight;
+
+    Q_UNUSED(widthAuto);
+    Q_UNUSED(widthFromOffsets);
+
+    placeBoxAt(box, x, y);
+}
+
+void LayoutEngine::layoutAbsoluteDescendants(Box *box, int depth)
+{
+    // Depth first, so a box is placed before the boxes it contains. An absolute
+    // descendant of an absolute box is positioned against that box, which is why
+    // this cannot be a single flat pass over the tree: the ancestor has to have
+    // its final geometry before the descendant can be placed.
+    for (const auto &childPtr : box->children()) {
+        Box *child = childPtr.get();
+        if (!child)
+            continue;
+
+        const css::ComputedStyle *style = child->style();
+        if (!style || !style->generatesBox())
+            continue;
+
+        if (child->isOutOfFlow()) {
+            // The box is placed first, because a descendant of its own is
+            // positioned against it and needs its final geometry. Then its own
+            // absolute descendants are placed against it.
+            layoutAbsolutelyPositioned(child, depth + 1);
+            layoutAbsoluteDescendants(child, depth + 1);
+        } else {
+            layoutAbsoluteDescendants(child, depth + 1);
+        }
+    }
+}
+
+const css::ComputedStyle *LayoutEngine::arenaStyle(const css::ComputedStyle &style)
+{
+    m_styleArena.push_back(style);
+    return &m_styleArena.back();
+}
+
 LayoutResult LayoutEngine::layout(Box *root)
 {
     m_result = LayoutResult();
+
+    // The overrides the previous pass handed out belong to the box tree that
+    // pass produced, which is being replaced.
+    m_styleArena.clear();
+
     if (!root)
         return m_result;
 
@@ -1526,6 +1840,11 @@ LayoutResult LayoutEngine::layout(Box *root)
         : 0;
 
     layoutBlock(root, context, marginTop);
+
+    // Absolutely positioned boxes are placed after normal flow, because their
+    // containing block has to have its final size first: `bottom: 0` needs the
+    // height, and the height depends on the content that flowed.
+    layoutAbsoluteDescendants(root);
 
     // The document is as tall as the deepest content, which is not always the
     // root box itself: a child can overflow its parent when the parent has a

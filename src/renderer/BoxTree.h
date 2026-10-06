@@ -71,17 +71,57 @@ public:
     /// to resolve percentage widths.
     Box *containingBlock() const;
 
+    /// The containing block for an absolutely positioned box: the nearest
+    /// ancestor that is itself positioned, or nullptr when there is none and the
+    /// initial containing block - the viewport - applies.
+    ///
+    /// This is a different question from containingBlock(), which answers where
+    /// a box's width percentages resolve. An `absolute` box is placed against
+    /// its positioned ancestor's padding box even when that ancestor is inline,
+    /// which is why the two cannot share an answer.
+    Box *positionedAncestor() const;
+
+    /// True when this box establishes a stacking context: a positioned box with
+    /// a z-index other than auto, or the root. Such a box paints as a unit, and
+    /// its descendants' z-index values are resolved within it.
+    bool establishesStackingContext() const;
+
+    /// True when this box is taken out of normal flow by `position: absolute`
+    /// or `fixed`.
+    ///
+    /// The test is deliberately not just `style->isAbsolutelyPositioned()`. The
+    /// layout artifacts - anonymous blocks, line boxes, text boxes, bullets -
+    /// borrow the style of the box they were made for, so an anonymous wrapper
+    /// inside an absolute box reports that it is absolutely positioned too.
+    /// Treating an artifact as an out-of-flow box makes layout place it, which
+    /// gives it new artifact children, which are placed again: the recursion
+    /// never ends. Only a box that stands for an element can be out of flow.
+    bool isOutOfFlow() const;
+
     // ---------------------------------------------------------- geometry
     /// The border box, in the coordinate space of the nearest positioned
     /// ancestor (the document origin in practice).
     const QRectF &borderBox() const { return m_borderBox; }
     void setBorderBox(const QRectF &rect) { m_borderBox = rect; }
 
-    /// The content box: inside padding and border.
+    /// The content box, relative to the box's own border box origin: its width
+    /// and height are the resolved content size, which is what layout computes.
+    /// It is deliberately not in document coordinates - use contentBoxInDocument
+    /// for that - because layout works in relative sizes and adding the offset
+    /// everywhere would invite double-counting.
     QRectF contentBox() const { return m_contentBox; }
+
+    /// The content box in document coordinates, for a caller that needs to
+    /// compare it against other boxes rather than against the box itself.
+    QRectF contentBoxInDocument() const
+    {
+        return m_contentBox.translated(m_borderBox.topLeft());
+    }
     void setContentBox(const QRectF &rect) { m_contentBox = rect; }
 
-    /// The padding box: inside the border.
+    /// The padding box in document coordinates: the border box inset by the
+    /// border widths. This is what an absolutely positioned descendant is placed
+    /// against, so it is absolute rather than relative.
     QRectF paddingBox() const;
     /// The margin box, used for margin collapsing and hit testing.
     QRectF marginBox() const;

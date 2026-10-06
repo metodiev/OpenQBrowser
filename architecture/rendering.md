@@ -224,12 +224,12 @@ collapsed borders do not.
 `LayoutResult::warnings` carries the one diagnostic the engine produces: the
 nesting-limit warning described above, recorded once per layout. Everything else
 in this section is simply absent — these properties are stored in `ComputedStyle`
-and never read by `src/renderer/`.
+and never read by `src/renderer/`. Positioning, flexbox and `box-sizing` are
+implemented and documented below, so they are not listed here.
 
 | Property | What you observe |
 | --- | --- |
 | `float`, `clear` | Nothing floats; lines are not shortened around a float. |
-| `position`, `top`/`right`/`bottom`/`left` | A `position: relative; left: 30px` box stays exactly where block layout put it. |
 | `vertical-align` | Lines are always baseline-aligned. |
 | `text-align` | A line always starts at the containing block's left content edge. |
 | `overflow` | Nothing clips; no scroll container is established inside a page. |
@@ -321,6 +321,107 @@ values, stretch, columns, wrapping, gaps, `order`, `flex-basis` including
 percentages, nesting, the anonymous-box rule, and `box-sizing` for both plain
 boxes and flex items.
 
+## Positioning
+
+`position: relative`, `absolute`, `fixed` and `sticky` are implemented, along with
+`top`/`right`/`bottom`/`left` and `z-index`. They split into two very different
+mechanisms, and the split explains the shape of the code.
+
+### In flow: `relative`
+
+A relatively positioned box keeps the space it would have occupied; only its own
+geometry moves. So `applyRelativeOffset()` runs at the *end* of the box's own
+layout, after its height has been reported to its parent, and the value returned
+to the parent is computed from the un-displaced position. Nothing above or beside
+the box can tell that it moved, which is exactly the property authors rely on when
+they nudge something without disturbing the page.
+
+Only the offsets the author wrote displace it, and each axis is decided
+separately: `left` wins over `right`, `top` over `bottom`, which is the CSS 2.2
+rule for an over-constrained box.
+
+### Out of flow: `absolute` and `fixed`
+
+These are placed by a **second pass**, `layoutAbsoluteDescendants()`, which runs
+after normal flow has finished. The ordering is forced by the specification: an
+absolutely positioned box is placed against its containing block's padding box,
+and `bottom: 0` needs that block's final height — which is only known once the
+content inside it has flowed. The pass therefore runs depth-first: a box is placed
+before its own positioned descendants, so a nested absolute box has a settled
+ancestor to measure against.
+
+An out-of-flow box takes no space. That single rule is enforced in five places,
+and missing any one of them produces a visible bug:
+
+- `layoutBlockChildren()` skips it, so it does not shift its siblings or take part
+  in margin collapsing.
+- `layoutInlineRun()` keeps it aside rather than measuring it into a line — and
+  rather than destroying it when the line boxes replace the inline children.
+- `shrinkToFitWidth()` ignores it, or a dropdown would widen the menu it hangs
+  from.
+- The content-height dispatch ignores it, or a container's only block-level child
+  would stretch it.
+- `collect()` in the inline measurement ignores its content, or its text would add
+  a line to its container.
+
+### `sticky`
+
+Sticky positioning is the one feature whose answer depends on the scroll
+position, which changes without a re-layout. Baking it into the box's geometry
+would mean re-laying out the page on every scroll. It is therefore resolved while
+**painting**, by `Painter::paintStickyBox()`: the box is translated for the
+duration of its paint and moved back afterwards. Sticky boxes are few — a header,
+a table heading — so the cost is not worth avoiding.
+
+The box sticks within its containing block, so it scrolls away once its section
+has gone past rather than floating forever. There is no nested scroll container in
+this engine, so the viewport is always the constraint.
+
+### `z-index`
+
+Painting follows the CSS 2.2 layering rule reduced to what this engine models:
+in-flow content first, then positioned boxes with a positive `z-index` on top of
+it, lowest first. `Painter::paintChildrenInStackingOrder()` does that split. The
+sort is stable so equal levels keep document order, which the specification
+requires and which matters when a page relies on order between two boxes at the
+same level.
+
+A full implementation would give every stacking context its own layering and also
+honour `opacity` and `transform`, neither of which this engine models.
+
+### Two traps
+
+* **Layout artifacts borrow their parent's style.** An anonymous block or a line
+  box inside an absolutely positioned box reports that it is absolutely positioned
+  too. Treating an artifact as out of flow makes layout place it, which gives it
+  new artifact children, which are placed again — unbounded recursion.
+  `Box::isOutOfFlow()` therefore checks the box's *type* as well as its style, and
+  is used everywhere the question is asked.
+
+* **A positioned inline keeps a box.** A plain `<span>` is dissolved into the line
+  during inline layout, which leaves an absolutely positioned descendant with no
+  containing block. `<span style="position:relative">` wrapping a dropdown is the
+  pattern this exists for, so a positioned inline is built as an inline-block
+  instead: atomic, so it does not break across lines.
+
+### Size overrides need a stable home
+
+Both flex items and absolutely positioned boxes are laid out at a size this engine
+resolved rather than at the one their own `width` asks for, so they are given a
+copy of their style with that size substituted. That copy cannot live on the
+stack: layout stores style pointers in the boxes it builds — line boxes in
+particular — and those are still read when the page is painted. `arenaStyle()`
+keeps every override in a per-pass `std::deque`, whose elements have stable
+addresses, and the arena is cleared at the start of the next layout.
+
+### Tests
+
+`tests/unit/tst_layout.cpp` covers positioning in ten cases: relative
+displacement and its effect on flow, absolute placement against a positioned
+ancestor, far-edge pinning, filling between opposite offsets, stretching between
+`top` and `bottom`, nesting, out-of-flow space, content inside an absolute box,
+sticky painting at two scroll offsets, and `z-index` paint order.
+
 ## Painting
 
 `Painter` walks the box tree and draws boxes. It is stateless apart from its
@@ -402,8 +503,7 @@ makes clicking text inside a link work.
 
 ## What a reader will notice
 
-* Floats, positioning, grid and tables do not affect layout.
-* Flexbox does affect layout, through `layoutFlexChildren()`; see below.
+* Floats, grid and tables do not affect layout. Flexbox and positioning do.
 * `documentWidth` is `max(viewportWidth, root right edge)`, so a page does not
   scroll horizontally unless a box overflows.
 * Text is measured with platform fonts, so a layout can differ by a pixel or two

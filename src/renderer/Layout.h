@@ -33,10 +33,10 @@ struct LayoutResult
 /// Every box's geometry is stored in absolute document coordinates, which keeps
 /// the engine free of coordinate translations and lets the painter draw a box
 /// without walking its ancestors. The implementation covers block stacking,
-/// inline line breaking, margin collapsing, flexbox, replaced elements and
-/// box-sizing; features outside that set - floats, positioning, grid, table
-/// layout - have no layout effect at all, and rendering.md lists them so a
-/// reader knows what to expect rather than assuming they work.
+/// inline line breaking, margin collapsing, flexbox, relative and absolute
+/// positioning, replaced elements and box-sizing. Features outside that set -
+/// floats, grid, table layout - have no effect at all, and rendering.md lists
+/// them so a reader knows what to expect rather than assuming they work.
 class LayoutEngine
 {
 public:
@@ -153,6 +153,22 @@ private:
     /// container's align-items when the item says auto.
     static QString resolveAlignSelf(const FlexItem &item, const css::ComputedStyle *container);
 
+    /// Reserves a style that overrides part of a box's own, for the duration of
+    /// the layout.
+    ///
+    /// Flex items and absolutely positioned boxes are laid out at a size this
+    /// engine resolved rather than at the one their own `width` asks for, so they
+    /// are given a copy of their style with that size substituted. The copy has
+    /// to outlive the pass: layout stores style pointers in the boxes it builds,
+    /// including on line boxes, and those are still read when the page is
+    /// painted. The arena gives every copy a stable address for as long as the
+    /// box tree built by this layout lives.
+    const css::ComputedStyle *arenaStyle(const css::ComputedStyle &style);
+
+    /// Every style this layout pass created. Deque rather than vector, because
+    /// the addresses are handed out and must survive later insertions.
+    std::deque<css::ComputedStyle> m_styleArena;
+
     /// The resolved bottom margin a box contributes to the gap before the next
     /// sibling. layoutBlock() folds it into its return value; the caller needs
     /// it separately to collapse it with the next sibling's top margin.
@@ -172,6 +188,31 @@ private:
 
     /// Lays out a replaced box such as <img> from its intrinsic size.
     void layoutReplaced(Box *box, const Context &context);
+
+    /// Applies a relatively positioned box's offsets. Relative positioning is
+    /// the one kind that does not remove a box from flow: the space it would
+    /// have occupied is still reserved, and only the box's own geometry moves.
+    /// Applying it at the end of the box's own layout is therefore correct, and
+    /// the ancestor's cursor is unaffected because the move happens after the
+    /// height has been reported.
+    void applyRelativeOffset(Box *box);
+
+    /// The distance a relatively positioned box is displaced by, resolved.
+    /// Returns false when the box is not relatively positioned, or when it has
+    /// no offset at all, which is the common case and worth skipping.
+    bool relativeOffsetFor(const Box *box, double containingBlockWidth,
+                           double containingBlockHeight, double *dx, double *dy) const;
+
+    /// Lays out every absolutely positioned descendant of `box` that has not yet
+    /// been placed. Absolute boxes are laid out after normal flow, because their
+    /// containing block is only known once its own height and position are, and
+    /// because `bottom: 0` needs the container's final height.
+    void layoutAbsoluteDescendants(Box *box, int depth = 0);
+    /// Lays out one absolutely positioned box against its containing block.
+    /// `depth` is threaded through from the enclosing pass so that the recursion
+    /// guard still applies: resetting it would let a deeply nested or cyclic
+    /// arrangement of positioned boxes exhaust the stack.
+    void layoutAbsolutelyPositioned(Box *box, int depth);
 
     double resolveUsedWidth(const Box *box, double containingBlockWidth, bool *isAuto) const;
     double resolveUsedHeight(const Box *box, const Context &context) const;

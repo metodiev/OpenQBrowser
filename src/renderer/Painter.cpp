@@ -1,5 +1,8 @@
 #include "renderer/Painter.h"
 
+#include <algorithm>
+#include <vector>
+
 #include "renderer/Layout.h"
 
 #include <QFontMetricsF>
@@ -61,6 +64,14 @@ QImage Painter::renderToImage(Box *root, int width, int height)
 
 QImage Painter::renderToImage(Box *root, int width, int height, const Options &options)
 {
+    // The image is the viewport, so a sticky box has something to stick to.
+    if (options.viewportWidth <= 0) {
+        Options withViewport = options;
+        withViewport.viewportWidth = width;
+        withViewport.viewportHeight = height;
+        return renderToImage(root, width, height, withViewport);
+    }
+
     QImage image(width, height, QImage::Format_ARGB32_Premultiplied);
     Painter painter(options);
     image.fill(painter.canvasColor(root));
@@ -124,25 +135,163 @@ void Painter::paintBox(QPainter *painter, Box *box)
         return;
     }
 
+    // A sticky box is drawn at a position that depends on the scroll offset, so
+    // it takes a path of its own before the ordinary drawing begins. The check
+    // lives here and not in paintBoxContents, which the sticky path calls, so
+    // that the adjustment is applied once rather than recursively.
+    if (style && style->position == QLatin1String("sticky") && !m_inStickyPaint) {
+        paintStickyBox(painter, box);
+        return;
+    }
+
+    paintBoxContents(painter, box);
+}
+
+void Painter::paintChildrenInStackingOrder(QPainter *painter, Box *box)
+{
+    // Three groups, painted in this order, which is the CSS 2.2 stacking rule
+    // reduced to what this engine can express:
+    //
+    //   1. in-flow content, and positioned boxes whose z-index is auto or
+    //      negative, in document order;
+    //   2. positioned descendants with a positive z-index, lowest first.
+    //
+    // A full implementation would also give each stacking context its own
+    // layering and honour `opacity`, which this engine does not model.
+    std::vector<std::pair<int, Box *>> positive;
+
+    for (const auto &childPtr : box->children()) {
+        Box *child = childPtr.get();
+        if (!child)
+            continue;
+
+        const css::ComputedStyle *style = child->style();
+        const bool positioned = style && style->isPositioned();
+        const int z = style && style->hasZIndex ? style->zIndex : 0;
+
+        if (positioned && z > 0) {
+            positive.emplace_back(z, child);
+            continue;
+        }
+
+        paintBox(painter, child);
+    }
+
+    if (positive.empty())
+        return;
+
+    // Stable sort so that equal z-index values keep document order, which the
+    // specification requires and which matters when a page relies on order for
+    // two boxes at the same level.
+    std::stable_sort(positive.begin(), positive.end(),
+                     [](const auto &a, const auto &b) { return a.first < b.first; });
+
+    for (const auto &entry : positive)
+        paintBox(painter, entry.second);
+}
+
+void Painter::paintBoxContents(QPainter *painter, Box *box)
+{
+    const css::ComputedStyle *style = box->style();
+
     if (box->type() == Box::Type::Text) {
         paintText(painter, box);
         return;
     }
 
     // Background, then border, then children, then the model overlay: painter's
-    // algorithm with the box's own content on top.
+    // algorithm with the box's own content on top. The children are painted in
+    // stacking order so that a positioned box can cover the content it was
+    // written to cover.
     paintBackground(painter, box);
     paintBorders(painter, box);
 
     const QColor savedColor = m_currentTextColor;
 
-    for (const auto &child : box->children())
-        paintBox(painter, child.get());
+    paintChildrenInStackingOrder(painter, box);
 
     m_currentTextColor = savedColor;
 
     if (m_options.showBoxModel)
         paintBoxModelOverlay(painter, box);
+
+    Q_UNUSED(style);
+}
+
+QRectF Painter::stickyViewportFor(const Box *box) const
+{
+    const css::ComputedStyle *style = box->style();
+    if (!style || style->position != QLatin1String("sticky"))
+        return {};
+
+    // There is no scroll container other than the viewport in this engine, so
+    // the sticky constraint is the viewport itself. The visible rect is in
+    // document coordinates, which is the space the box's geometry lives in.
+    const double top = m_options.scrollY;
+    const double height = m_options.viewportHeight > 0 ? m_options.viewportHeight : 0;
+    if (height <= 0)
+        return {};
+
+    return QRectF(0, top, m_options.viewportWidth, height);
+}
+
+void Painter::paintStickyBox(QPainter *painter, Box *box)
+{
+    const css::ComputedStyle *style = box->style();
+    if (!style)
+        return;
+
+    const QRectF viewport = stickyViewportFor(box);
+    if (viewport.isEmpty()) {
+        paintBoxContents(painter, box);
+        return;
+    }
+
+    const QRectF border = box->borderBox();
+
+    // The box sticks within its containing block, which is why a sticky header
+    // scrolls away once its section has gone past rather than floating forever.
+    Box *containing = box->containingBlock();
+    const QRectF container = containing ? containing->paddingBox() : viewport;
+
+    // Where the box would like to be, from its own offsets.
+    double y = border.y();
+    const bool hasTop = !style->top.isAuto();
+    const bool hasBottom = !style->bottom.isAuto();
+
+    if (hasTop) {
+        const double wanted = viewport.top() + style->top.resolve(viewport.height());
+        // It sticks only while it would otherwise be above the wanted line, and
+        // only as far as its containing block allows.
+        y = qMax(border.y(), wanted);
+        y = qMin(y, container.bottom() - border.height());
+        y = qMax(y, container.top());
+    } else if (hasBottom) {
+        const double wanted = viewport.bottom() - style->bottom.resolve(viewport.height())
+            - border.height();
+        y = qMin(border.y(), wanted);
+        y = qMax(y, container.top());
+    }
+
+    const double dy = y - border.y();
+    if (qFuzzyIsNull(dy)) {
+        paintBoxContents(painter, box);
+        return;
+    }
+
+    // The subtree is translated for the duration of the paint. Sticky boxes are
+    // few - a header or a table heading - so moving the subtree and moving it
+    // back costs less than threading an offset through every drawing call.
+    box->translate(0, dy);
+
+    // The guard keeps a sticky descendant from being adjusted a second time
+    // against a viewport its ancestor already accounted for.
+    const bool previous = m_inStickyPaint;
+    m_inStickyPaint = true;
+    paintBoxContents(painter, box);
+    m_inStickyPaint = previous;
+
+    box->translate(0, -dy);
 }
 
 void Painter::paintBackground(QPainter *painter, Box *box)

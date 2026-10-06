@@ -28,6 +28,11 @@ public:
         /// Scroll offset: the document is translated by the negative of this.
         double scrollX = 0;
         double scrollY = 0;
+        /// The visible area, needed only by sticky positioning, which is the one
+        /// feature whose result depends on where the viewport is rather than on
+        /// the document alone. Zero means unknown, in which case nothing sticks.
+        double viewportWidth = 0;
+        double viewportHeight = 0;
         /// When true, box outlines and margins are drawn over the page. This is
         /// the beginning of a DevTools feature and is off by default.
         bool showBoxModel = false;
@@ -56,11 +61,40 @@ public:
 
 private:
     void paintBox(QPainter *painter, Box *box);
+
+    /// The viewport rectangle a sticky box is constrained to, in document
+    /// coordinates, or an empty rect when the box does not stick. Sticky
+    /// positioning depends on the scroll position, which changes without a
+    /// re-layout, so it is resolved while painting rather than baked into the
+    /// box's geometry.
+    QRectF stickyViewportFor(const Box *box) const;
+
+    /// Draws a sticky box's subtree with the box's own geometry adjusted for the
+    /// scroll position.
+    void paintStickyBox(QPainter *painter, Box *box);
+
+    /// Draws a box and its subtree without the sticky adjustment. This is what
+    /// paintStickyBox calls once it has moved the box, so that the sticky branch
+    /// is not taken a second time - which would recurse forever.
+    void paintBoxContents(QPainter *painter, Box *box);
+
+    /// Paints a box's children in stacking order rather than document order.
+    ///
+    /// CSS 2.2 paints in phases: the in-flow content first, then the positioned
+    /// boxes with a positive z-index on top of it. Without this an absolutely
+    /// positioned dropdown or modal - which is always written after the content
+    /// it covers in the document anyway - would be drawn underneath a later
+    /// sibling, which is exactly what it exists to cover.
+    void paintChildrenInStackingOrder(QPainter *painter, Box *box);
     void paintBackground(QPainter *painter, Box *box);
     void paintBorders(QPainter *painter, Box *box);
     void paintText(QPainter *painter, Box *box);
     void paintBullet(QPainter *painter, Box *box);
     void paintBoxModelOverlay(QPainter *painter, Box *box);
+
+    /// True while a sticky box's subtree is being drawn, so a nested sticky box
+    /// is not adjusted against the viewport a second time.
+    bool m_inStickyPaint = false;
 
     /// Position of a box relative to the viewport after scrolling.
     QRectF viewportRect(const Box *box) const;

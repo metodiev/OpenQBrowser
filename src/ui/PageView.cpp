@@ -219,6 +219,10 @@ void PageView::paintEvent(QPaintEvent *event)
     renderer::Painter::Options options;
     options.scrollX = m_scroll.x();
     options.scrollY = m_scroll.y();
+    // Sticky positioning is the one feature whose result depends on where the
+    // viewport is, so the visible size is passed along with the offset.
+    options.viewportWidth = width();
+    options.viewportHeight = height();
     options.showBoxModel = m_showBoxModel;
 
     // The canvas colour comes from the page, so a dark page does not flash

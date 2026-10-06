@@ -93,6 +93,18 @@ private slots:
     void keepsFlexItemsOutOfTheAnonymousBox();
     void handlesNestedFlexContainers();
     void honoursBoxSizing();
+
+    // Positioning.
+    void movesRelativelyPositionedBoxes();
+    void laysOutAbsolutelyPositionedBoxes();
+    void pinsAbsoluteBoxesToTheFarEdges();
+    void fillsBetweenOppositeOffsets();
+    void stretchesAnAbsoluteBoxBetweenTopAndBottom();
+    void positionsAgainstTheNearestPositionedAncestor();
+    void keepsOutOfFlowBoxesOutOfFlow();
+    void laysOutContentInsideAnAbsoluteBox();
+    void paintsStickyBoxesAtTheViewportEdge();
+    void paintsPositiveZIndexOnTop();
     void collapsesAdjacentMargins();
     void wrapsLongTextIntoLines();
     void laysOutInlineElements();
@@ -930,6 +942,314 @@ void LayoutTest::honoursBoxSizing()
     QCOMPARE(fa->width(), 150.0);
     QCOMPARE(fb->width(), 150.0);
     QCOMPARE(fb->x(), fa->x() + 150.0);
+}
+
+// --------------------------------------------------------------- positioning
+
+void LayoutTest::movesRelativelyPositionedBoxes()
+{
+    // Relative positioning moves the box but leaves the space it would have
+    // used reserved, which is the whole difference from absolute positioning.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='a' style='position:relative; left:30px; top:20px; width:100px; height:40px'>a</div>"
+        "<div id='b' style='width:100px; height:40px'>b</div>"
+        "</body></html>"));
+
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY(a && b);
+
+    QCOMPARE(a->x(), 30.0);
+    QCOMPARE(a->y(), 20.0);
+
+    // The following box is exactly where it would be if `a` had no offset, so
+    // the displacement did not disturb the flow.
+    QCOMPARE(b->y(), 40.0);
+
+    // `right` moves the box the other way, and `bottom` moves it up.
+    Page negated(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='a' style='position:relative; right:25px; bottom:10px; width:100px;"
+        " height:40px'>a</div>"
+        "</body></html>"));
+
+    renderer::Box *negatedBox = negated.boxForId(QStringLiteral("a"));
+    QVERIFY(negatedBox);
+    QCOMPARE(negatedBox->x(), -25.0);
+    QCOMPARE(negatedBox->y(), -10.0);
+}
+
+void LayoutTest::laysOutAbsolutelyPositionedBoxes()
+{
+    // An absolute box is placed against its positioned ancestor's padding box,
+    // and takes no space in the flow around it.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='host' style='position:relative; width:400px; height:300px; margin-left:20px'>"
+        "<div id='abs' style='position:absolute; left:50px; top:40px; width:100px; height:30px'>a</div>"
+        "<div id='flow' style='height:60px'>f</div>"
+        "</div></body></html>"));
+
+    renderer::Box *host = page.boxForId(QStringLiteral("host"));
+    renderer::Box *abs = page.boxForId(QStringLiteral("abs"));
+    renderer::Box *flow = page.boxForId(QStringLiteral("flow"));
+    QVERIFY(host && abs && flow);
+
+    // The host's padding box starts at its border box, since it has no padding.
+    QCOMPARE(abs->x(), host->x() + 50.0);
+    QCOMPARE(abs->y(), host->y() + 40.0);
+
+    // The in-flow sibling starts at the top: the absolute box took no space.
+    QCOMPARE(flow->y(), host->y());
+    // And the host's height is unaffected by the absolute box.
+    QCOMPARE(host->height(), 300.0);
+}
+
+void LayoutTest::pinsAbsoluteBoxesToTheFarEdges()
+{
+    // `right` and `bottom` measure from the far edges of the containing block,
+    // which is how a close button or a badge is placed.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='host' style='position:relative; width:400px; height:300px'>"
+        "<div id='corner' style='position:absolute; right:10px; bottom:20px; width:80px;"
+        " height:25px'>c</div>"
+        "</div></body></html>"));
+
+    renderer::Box *host = page.boxForId(QStringLiteral("host"));
+    renderer::Box *corner = page.boxForId(QStringLiteral("corner"));
+    QVERIFY(host && corner);
+
+    QCOMPARE(corner->x(), host->x() + 400.0 - 80.0 - 10.0);
+    QCOMPARE(corner->y(), host->y() + 300.0 - 25.0 - 20.0);
+}
+
+void LayoutTest::fillsBetweenOppositeOffsets()
+{
+    // `left: 0; right: 0` stretches the box across the containing block, which
+    // is how an overlay or a full-width pinned bar is written.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='host' style='position:relative; width:400px; height:200px'>"
+        "<div id='fill' style='position:absolute; left:20px; right:30px; top:10px; height:40px'>f</div>"
+        "</div></body></html>"));
+
+    renderer::Box *host = page.boxForId(QStringLiteral("host"));
+    renderer::Box *fill = page.boxForId(QStringLiteral("fill"));
+    QVERIFY(host && fill);
+
+    QCOMPARE(fill->x(), host->x() + 20.0);
+    QCOMPARE(fill->width(), 350.0); // 400 - 20 - 30
+}
+
+void LayoutTest::stretchesAnAbsoluteBoxBetweenTopAndBottom()
+{
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='host' style='position:relative; width:300px; height:400px'>"
+        "<div id='fill' style='position:absolute; top:50px; bottom:60px; left:0; width:100px'>f</div>"
+        "</div></body></html>"));
+
+    renderer::Box *fill = page.boxForId(QStringLiteral("fill"));
+    QVERIFY(fill);
+    QCOMPARE(fill->height(), 290.0); // 400 - 50 - 60
+}
+
+void LayoutTest::positionsAgainstTheNearestPositionedAncestor()
+{
+    // A nested absolute box is placed against the closest positioned ancestor,
+    // not the outermost one and not the root.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='outer' style='position:relative; width:600px; height:400px'>"
+        "<div id='middle' style='position:relative; margin-left:100px; margin-top:50px;"
+        " width:300px; height:200px'>"
+        "<div id='inner' style='position:absolute; left:10px; top:10px; width:50px;"
+        " height:50px'>i</div>"
+        "</div>"
+        "</div></body></html>"));
+
+    renderer::Box *middle = page.boxForId(QStringLiteral("middle"));
+    renderer::Box *inner = page.boxForId(QStringLiteral("inner"));
+    QVERIFY(middle && inner);
+
+    // Measured from `middle`, not from `outer`.
+    QCOMPARE(inner->x(), middle->x() + 10.0);
+    QCOMPARE(inner->y(), middle->y() + 10.0);
+
+    // An `absolute` box is itself a containing block for its own descendants,
+    // even without a z-index, because it is positioned.
+    Page nested(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='outer' style='position:relative; width:600px; height:400px'>"
+        "<div id='abs' style='position:absolute; left:100px; top:100px; width:200px;"
+        " height:100px'>"
+        "<div id='child' style='position:absolute; left:5px; top:5px; width:20px;"
+        " height:20px'>c</div>"
+        "</div></div></body></html>"));
+
+    renderer::Box *abs = nested.boxForId(QStringLiteral("abs"));
+    renderer::Box *child = nested.boxForId(QStringLiteral("child"));
+    QVERIFY(abs && child);
+    QCOMPARE(child->x(), abs->x() + 5.0);
+    QCOMPARE(child->y(), abs->y() + 5.0);
+}
+
+void LayoutTest::keepsOutOfFlowBoxesOutOfFlow()
+{
+    // An absolute box between two siblings must not move either of them, and
+    // must not contribute to the document height.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='a' style='height:50px'>a</div>"
+        "<div id='abs' style='position:absolute; top:0; left:0; width:100px; height:900px'>x</div>"
+        "<div id='b' style='height:50px'>b</div>"
+        "</body></html>"));
+
+    renderer::Box *a = page.boxForId(QStringLiteral("a"));
+    renderer::Box *b = page.boxForId(QStringLiteral("b"));
+    QVERIFY(a && b);
+
+    // The two in-flow boxes are adjacent, so the absolute box took no space.
+    QCOMPARE(b->y(), a->y() + 50.0);
+}
+
+void LayoutTest::laysOutContentInsideAnAbsoluteBox()
+{
+    // The content of an absolute box has to be laid out like any other: an
+    // earlier bug left its subtree unmeasured, so the box came out with no
+    // height and its text painted at zero size.
+    Page page(QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='host' style='position:relative; width:400px; height:200px'>"
+        "<div id='abs' style='position:absolute; left:20px; top:20px; width:150px'>"
+        "absolute text here</div>"
+        "</div></body></html>"));
+
+    renderer::Box *abs = page.boxForId(QStringLiteral("abs"));
+    QVERIFY(abs);
+
+    // The height comes from the content, and the text wrapped inside the width.
+    QVERIFY2(abs->height() > 0, "the absolute box should have content height");
+    QCOMPARE(abs->width(), 150.0);
+
+    // Its text was measured, which is what the line boxes in the layout result
+    // record. An earlier bug left the subtree unmeasured, so the box came out
+    // with no height and the text painted at zero size.
+    bool foundTextUnderIt = false;
+    for (renderer::Box *line : page.result.lineBoxes) {
+        for (const auto &child : line->children()) {
+            if (!child->text().isEmpty() && child->width() > 0)
+                foundTextUnderIt = true;
+        }
+    }
+    QVERIFY2(foundTextUnderIt, "the absolute box's text should have been measured");
+
+    // The text is positioned inside the absolute box, not at the page origin.
+    const double firstLineY = [&] {
+        for (renderer::Box *line : page.result.lineBoxes) {
+            for (const auto &child : line->children()) {
+                if (!child->text().isEmpty())
+                    return child->y();
+            }
+        }
+        return -1.0;
+    }();
+    QCOMPARE(firstLineY, abs->y());
+}
+
+void LayoutTest::paintsStickyBoxesAtTheViewportEdge()
+{
+    // Sticky positioning depends on the scroll position, which changes without a
+    // re-layout, so it is resolved while painting. A sticky header must be at the
+    // top of the viewport however far the page has been scrolled.
+    Page page(QStringLiteral(
+        "<html><head><style>"
+        "#head{position:sticky; top:0; height:40px; background:#1f3a5f}"
+        "#after{height:900px}"
+        "</style></head><body style='margin:0'>"
+        "<div id='head'></div><div id='after'></div>"
+        "</body></html>"));
+
+    renderer::Box *head = page.boxForId(QStringLiteral("head"));
+    QVERIFY(head);
+    // In the document the header is at the top, since sticky does not move it
+    // until the page is scrolled.
+    QCOMPARE(head->y(), 0.0);
+
+    // The painted row of the header, found by looking for the dark background.
+    const auto headerRow = [&](double scrollY) {
+        renderer::Painter::Options options;
+        options.scrollY = scrollY;
+        options.viewportWidth = 400;
+        options.viewportHeight = 300;
+        const QImage image = renderer::Painter::renderToImage(page.boxTree.get(), 400, 300, options);
+        for (int y = 0; y < 300; ++y) {
+            const QRgb pixel = image.pixel(200, y);
+            if (qBlue(pixel) > 80 && qRed(pixel) < 70 && qGreen(pixel) < 90)
+                return y;
+        }
+        return -1;
+    };
+
+    QCOMPARE(headerRow(0), 0);
+    // Scrolled down, a static box would have gone off the top; a sticky one is
+    // still the first thing in the viewport.
+    QCOMPARE(headerRow(200), 0);
+    QCOMPARE(headerRow(500), 0);
+}
+
+void LayoutTest::paintsPositiveZIndexOnTop()
+{
+    // The scene: a red box in flow, then a blue box positioned over it. Both are
+    // written in document order, so document order alone would paint blue last
+    // and hide red. Giving red a positive z-index has to bring it back to the
+    // front, which is what a dropdown or a modal relies on.
+    const auto sampleColourAt = [](const QString &html, int x, int y) {
+        Page page(html);
+        const QImage image = renderer::Painter::renderToImage(page.boxTree.get(), 200, 120);
+        return image.pixel(x, y);
+    };
+
+    const QString withoutZ = QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='red' style='position:absolute; left:0; top:0; width:100px; height:60px;"
+        " background:#ff0000'></div>"
+        "<div id='blue' style='position:absolute; left:0; top:0; width:100px; height:60px;"
+        " background:#0000ff'></div>"
+        "</body></html>");
+
+    // Equal z-index keeps document order, so the later box wins.
+    QCOMPARE(qBlue(sampleColourAt(withoutZ, 50, 30)), 255);
+
+    const QString withZ = QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='red' style='position:absolute; z-index:5; left:0; top:0; width:100px;"
+        " height:60px; background:#ff0000'></div>"
+        "<div id='blue' style='position:absolute; left:0; top:0; width:100px; height:60px;"
+        " background:#0000ff'></div>"
+        "</body></html>");
+
+    const QRgb pixel = sampleColourAt(withZ, 50, 30);
+    QVERIFY2(qRed(pixel) > 200 && qBlue(pixel) < 60,
+             qPrintable(QStringLiteral("expected red on top, got rgb(%1,%2,%3)")
+                            .arg(qRed(pixel))
+                            .arg(qGreen(pixel))
+                            .arg(qBlue(pixel))));
+
+    // Ordering between two positive levels follows the number, not the document.
+    const QString stacked = QStringLiteral(
+        "<html><body style='margin:0'>"
+        "<div id='low' style='position:absolute; z-index:2; left:0; top:0; width:100px;"
+        " height:60px; background:#00ff00'></div>"
+        "<div id='high' style='position:absolute; z-index:9; left:0; top:0; width:100px;"
+        " height:60px; background:#ff0000'></div>"
+        "</body></html>");
+
+    const QRgb top = sampleColourAt(stacked, 50, 30);
+    QVERIFY2(qRed(top) > 200 && qGreen(top) < 60,
+             qPrintable(QStringLiteral("the higher z-index should be on top")));
 }
 
 QTEST_MAIN(LayoutTest)

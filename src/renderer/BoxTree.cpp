@@ -150,9 +150,12 @@ QRectF Box::paddingBox() const
     if (!m_style)
         return m_borderBox;
 
-    QRectF rect = m_contentBox;
-    rect.adjust(-m_style->paddingLeft.value, -m_style->paddingTop.value,
-                m_style->paddingRight.value, m_style->paddingBottom.value);
+    // Derived from the border box rather than from the content box, because the
+    // content box is relative to the box's own origin and this has to be in
+    // document coordinates. The border box is already absolute.
+    QRectF rect = m_borderBox;
+    rect.adjust(m_style->borderLeftWidth, m_style->borderTopWidth,
+                -m_style->borderRightWidth, -m_style->borderBottomWidth);
     return rect;
 }
 
@@ -167,6 +170,47 @@ QRectF Box::marginBox() const
         rect.adjust(-left, -top, right, bottom);
     }
     return rect;
+}
+
+Box *Box::positionedAncestor() const
+{
+    for (Box *ancestor = m_parent; ancestor; ancestor = ancestor->m_parent) {
+        const css::ComputedStyle *style = ancestor->style();
+        if (style && style->isPositioned())
+            return ancestor;
+    }
+    return nullptr;
+}
+
+bool Box::isOutOfFlow() const
+{
+    // A layout artifact has no element of its own and is never positioned, even
+    // though it carries the style that produced it.
+    switch (m_type) {
+    case Type::Anonymous:
+    case Type::Line:
+    case Type::Text:
+    case Type::Bullet:
+        return false;
+    default:
+        break;
+    }
+
+    return m_style && m_style->isAbsolutelyPositioned();
+}
+
+bool Box::establishesStackingContext() const
+{
+    // The root box always does. Otherwise a z-index other than auto on a
+    // positioned box does it. `opacity` and `transform` also create one, but
+    // neither is honoured by this engine, so claiming they did would be wrong.
+    if (!m_parent)
+        return true;
+
+    const css::ComputedStyle *style = m_style;
+    if (!style)
+        return false;
+    return style->isPositioned() && style->hasZIndex;
 }
 
 void Box::translate(double dx, double dy)
@@ -257,6 +301,20 @@ std::unique_ptr<Box> BoxTreeBuilder::buildForNode(dom::Node *node,
         type = Box::Type::Block;
     else if (style->display == QLatin1String("inline-block"))
         type = Box::Type::InlineBlock;
+    else if (style->isPositioned() && style->display == QLatin1String("inline")) {
+        // A positioned inline element keeps a box of its own rather than being
+        // dissolved into the line, because an absolutely positioned descendant
+        // is placed against it. `<span style="position:relative">` wrapping a
+        // dropdown is the pattern this exists for, and dissolving the span would
+        // leave the dropdown with the viewport as its containing block.
+        //
+        // The specification puts the containing block at the union of the
+        // inline's fragments, which would let the span break across lines. An
+        // inline-block is the closest this engine gets: it is atomic, so it does
+        // not break, which for a label or a menu trigger is what the author
+        // wants anyway.
+        type = Box::Type::InlineBlock;
+    }
 
     auto box = std::make_unique<Box>(type, node, style);
 

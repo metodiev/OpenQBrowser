@@ -914,6 +914,24 @@ void StyleEngine::applyDeclaration(ComputedStyle *style, const Declaration &decl
         return;
     }
 
+    if (property == QLatin1String("z-index")) {
+        // "auto" is the initial value and means "do not create a stacking
+        // context". An integer sets the level.
+        if (value.isKeyword(QStringLiteral("auto"))) {
+            style->zIndex = 0;
+            style->hasZIndex = false;
+            return;
+        }
+        if (value.kind != Value::Kind::Number) {
+            if (consumed)
+                *consumed = false;
+            return;
+        }
+        style->zIndex = static_cast<int>(value.number);
+        style->hasZIndex = true;
+        return;
+    }
+
     if (property == QLatin1String("visibility")) {
         const QString keyword = keywordOr(style->visibility);
         if (keyword == QLatin1String("hidden") || keyword == QLatin1String("collapse"))
