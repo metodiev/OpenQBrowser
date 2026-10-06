@@ -111,6 +111,10 @@ public:
     /// Resources that failed to load, with the reason.
     QStringList failedResources() const { return m_failedResources; }
 
+    /// The loader this page fetches through, so the inspector can report on the
+    /// cache it maintains. Not owned.
+    network::ResourceLoader *loader() const { return m_loader.get(); }
+
     /// Links the history and bookmark stores so the page can record visits and
     /// resolve about: pages against live data.
     void setHistory(storage::HistoryStore *history) { m_history = history; }

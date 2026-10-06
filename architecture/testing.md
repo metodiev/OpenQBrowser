@@ -1,12 +1,12 @@
 # Testing
 
 OpenQBrowser has three test suites — unit, integration and browser — containing
-fourteen QTest-based targets, all registered with CTest from `tests/CMakeLists.txt`:
+sixteen QTest-based targets, all registered with CTest from `tests/CMakeLists.txt`:
 
 | Suite | Directory | Targets | Contents |
 | --- | --- | --- | --- |
-| Unit | `tests/unit/` | `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript`, `tst_cookies` | One component each, in isolation; `tst_javascript` runs real scripts against a real parsed document. |
-| Integration | `tests/integration/` | `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting`, `tst_cookie_flow` | Several components together, including real loopback HTTP; `tst_scripting` drives scripted pages through the load pipeline. |
+| Unit | `tests/unit/` | `tst_url`, `tst_html`, `tst_css`, `tst_layout`, `tst_javascript`, `tst_cookies`, `tst_cache` | One component each, in isolation; `tst_javascript` runs real scripts against a real parsed document. |
+| Integration | `tests/integration/` | `tst_http`, `tst_pipeline`, `tst_redirect`, `tst_perf`, `tst_scripting`, `tst_cookie_flow`, `tst_cache_flow` | Several components together, including real loopback HTTP; `tst_scripting` drives scripted pages through the load pipeline. |
 | Browser | `tests/browser/` | `tst_browser`, `tst_devtools` | The window, its tabs and user-level navigation, and the developer tools panel. |
 
 Every target links `oqb_core` (and `tst_browser` and `tst_devtools` additionally
@@ -19,10 +19,10 @@ than leaving to the caller.
 tests/
   CMakeLists.txt
   unit/          CMakeLists.txt, tst_url.cpp, tst_html.cpp, tst_css.cpp,
-                 tst_layout.cpp, tst_javascript.cpp, tst_cookies.cpp
+                 tst_layout.cpp, tst_javascript.cpp, tst_cookies.cpp, tst_cache.cpp
   integration/   CMakeLists.txt, tst_http.cpp, tst_pipeline.cpp,
                  tst_redirect.cpp, tst_perf.cpp, tst_scripting.cpp,
-                 tst_cookie_flow.cpp
+                 tst_cookie_flow.cpp, tst_cache_flow.cpp
   browser/       CMakeLists.txt, tst_browser.cpp, tst_devtools.cpp
   fixtures/      (empty; reserved for test data)
 ```
@@ -92,6 +92,21 @@ deletion rather than an error. It also pins the two mistakes that are easy to ma
 in either direction: `127.0.0.1` may not set a cookie for `0.0.1`, and a value
 containing a semicolon ends the cookie at the semicolon, so `bad=va;lue` stores
 `bad=va`.
+
+### `tests/unit/tst_cache.cpp`
+
+Covers `CachePolicy` as a pure function of headers: no socket, no loader, no
+clock. That is the point of the file, because the mistakes available here are
+arithmetic ones and each shows up as a page that either re-downloads everything
+or serves something it should have asked about. Cases: `max-age` parsing and the
+malformed forms that must read as *absent* rather than zero; `no-store` versus
+`no-cache` (storing versus revalidating, which the classic cache bug conflates);
+`s-maxage` being ignored as a shared-cache directive; several `Cache-Control`
+headers combined; storability of errors, `206` and `304`; lifetime from
+`Expires - Date` rather than `Expires - now`; the `Last-Modified` heuristic and
+its cap; `Vary` acceptance and refusal; age measured from the origin's `Date`;
+and all three HTTP date forms including an unparseable one, which must be invalid
+rather than the epoch.
 
 ## Integration suite
 
@@ -184,6 +199,25 @@ redirect's cookie survives even though a redirect response never reaches
 (the shape a real site uses), that a cookie set for `127.0.0.1` is not sent to
 `localhost`, and that each hop of a redirect chain gets a `Cookie` header derived
 afresh rather than the one built for the first hop.
+
+### `tests/integration/tst_cache_flow.cpp`
+
+Covers the exchange rather than the arithmetic, against a server that actually
+honours conditional requests: it holds a body and a validator, answers a matching
+validator with a bodyless `304`, and answers anything else with the body. A server
+serving canned responses in order could not tell a conditional request from an
+unconditional one, and the whole feature is the difference.
+
+Cases: a fresh response reused with no request; a stale one revalidated, with the
+stored body asserted to be what the caller receives (a `304` carries no body, so
+serving the response as-is would hand the page nothing); both validators sent; a
+changed ETag producing the new body and not the stored one; `no-store` obeyed and
+`no-cache` distinguished from it; an error not cached, including the server
+recovering; a new load keeping fresh entries; a reload reaching the origin despite
+a fresh entry; and `aSecondPageReusesASharedStylesheet()`, which drives two real
+`browser::Page` loads and asserts one request for a stylesheet they share. That
+last case is the one that pins the navigation bug: restoring
+`Page::stop()`'s `clearCache()` makes it report two requests.
 
 ## Browser suite
 

@@ -56,6 +56,7 @@ add_library(oqb_core STATIC
     network/Url.cpp
     network/HttpMessage.cpp
     network/HttpClient.cpp
+    network/Cache.cpp
     network/ResourceLoader.cpp
     dom/Node.cpp
     dom/Document.cpp

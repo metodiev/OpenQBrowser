@@ -1,11 +1,14 @@
 #pragma once
 
 #include <QByteArray>
+#include <QDateTime>
 #include <QHash>
 #include <QList>
 #include <QObject>
+#include <QSet>
 #include <QString>
 
+#include "network/Cache.h"
 #include "network/HttpMessage.h"
 #include "network/Url.h"
 
@@ -44,6 +47,49 @@ struct Resource
     QString text() const;
 };
 
+/// One stored response plus what is needed to decide whether it may be reused.
+///
+/// The `Resource` is kept whole because a revalidation answering 304 produces no
+/// body: the stored one is what gets served, so discarding it would turn every
+/// successful revalidation into an empty response.
+struct CacheEntry
+{
+    Resource resource;
+    /// When this browser stored the response. The freshness clock runs forward
+    /// from here; `date` says when the origin generated it.
+    QDateTime storedAt;
+    /// The origin's `Date`, used to measure age correctly.
+    QDateTime date;
+    QDateTime lastModified;
+    QDateTime expires;
+    /// The `ETag` verbatim, including any `W/` prefix. It is an opaque token, and
+    /// deciding whether two are equivalent is the server's job, not this cache's.
+    QString etag;
+    /// How long the response stays fresh, in seconds. 0 means "revalidate".
+    int freshnessLifetime = 0;
+    /// Stored, but must be confirmed with the server before every reuse.
+    bool noCache = false;
+    /// Must not be reused once stale without revalidation.
+    bool mustRevalidate = false;
+    /// Which document load stored this. A duplicate request within the same load
+    /// is answered from the entry whatever its headers say, which is what stops
+    /// one page referencing the same image ten times from making ten requests.
+    /// Across loads the freshness rules apply instead.
+    int generation = 0;
+
+    /// True when the entry can be used without a request.
+    bool isFresh(const QDateTime &now) const
+    {
+        return CachePolicy::isFresh(CachePolicy::ageSeconds(storedAt, date, now),
+                                    freshnessLifetime, noCache);
+    }
+
+    /// True when the entry can be revalidated at all: with neither an ETag nor a
+    /// Last-Modified there is nothing to send, so the origin must be asked for
+    /// the whole response.
+    bool canRevalidate() const { return !etag.isEmpty() || lastModified.isValid(); }
+};
+
 /// Fetches navigations and subresources on behalf of a page.
 ///
 /// The loader owns an in-memory cache so a stylesheet or image referenced twice
@@ -67,9 +113,33 @@ public:
 
     bool cached(const Url &url, Resource *out) const;
     void store(const Resource &resource);
-    void clearCache() { m_cache.clear(); }
+    void clearCache();
 
     int cacheSize() const { return m_cache.size(); }
+
+    /// How many responses were served from cache without a request, and how many
+    /// were confirmed with a 304. Reported by the DevTools network view.
+    int cacheHitCount() const { return m_cacheHits; }
+    int revalidationCount() const { return m_revalidations; }
+
+    /// Empties the cache and forgets the counters.
+    void resetCacheCounters();
+
+    /// True when `url` has a stored entry that may be served as it stands.
+    bool isFreshInCache(const Url &url) const;
+
+    /// Marks the start of a new document load.
+    ///
+    /// Entries from the previous load stop being reused for request collapsing
+    /// but remain available under the HTTP freshness rules. This is what lets a
+    /// stylesheet referenced by two pages be revalidated rather than downloaded
+    /// again, while a broken image on one page is still not retried for every
+    /// element that points at it.
+    void beginLoad();
+
+    /// Marks the next fetch of `url` as a reload: any stored entry is revalidated
+    /// rather than reused, as the reload button requires.
+    void invalidate(const Url &url);
     void setMaxConcurrentRequests(int count) { m_maxConcurrent = qMax(1, count); }
     int requestCount() const { return m_requestCount; }
 
@@ -104,6 +174,23 @@ private:
     void startRequest(const PendingRequest &request);
     void handleHttpResponse(const Url &url, const HttpResponse &response);
     void handleFailure(const Url &url, const QString &error);
+    /// Merges a 304 into the entry it validates and answers with the stored body.
+    void handleNotModified(const Url &url, const HttpResponse &response);
+
+    /// Adds the `If-None-Match` / `If-Modified-Since` headers a stored entry
+    /// needs, and returns whether either was added.
+    bool applyValidators(HttpRequest *request, const Url &url) const;
+
+    /// True when a stored entry may be reused without asking the server.
+    bool reusable(const CacheEntry &entry, const QDateTime &now) const;
+
+    /// Records `response` in the cache when its own headers permit it. Returns
+    /// true when it was stored.
+    bool absorbIntoCache(const Url &url, const HttpResponse &response, const Resource &resource);
+
+    /// Tries to answer `request` from the cache. Returns true when it was
+    /// answered, either from a fresh entry or after a revalidation round trip.
+    bool tryCache(const PendingRequest &request);
 
     /// Adds the `Cookie` header for `request` from the jar, and refuses to add
     /// one the security policy would block.
@@ -111,12 +198,19 @@ private:
     /// Stores the cookies a response set.
     void absorbCookies(const HttpResponse &response, const Url &url);
 
-    QHash<QString, Resource> m_cache;
+    QHash<QString, CacheEntry> m_cache;
     QList<PendingRequest> m_queue;
     QHash<HttpClient *, Url> m_clients;
     int m_maxConcurrent = 6;
     int m_requestTimeoutMs = 30000;
     int m_requestCount = 0;
+    int m_cacheHits = 0;
+    int m_revalidations = 0;
+    /// Bumped by beginLoad(). Entries carry the generation that stored them.
+    int m_generation = 0;
+    /// URLs the next request for which must not be served from cache, set by
+    /// invalidate() for a reload.
+    QSet<QString> m_reloadUrls;
     /// Not owned. Null means cookies are disabled for this loader.
     storage::CookieJar *m_cookies = nullptr;
     QString m_userAgent;

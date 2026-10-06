@@ -388,6 +388,17 @@ void DevToolsPanel::refresh()
         for (const QString &entry : failed)
             resources << QStringLiteral("  %1").arg(entry);
     }
+
+    // The cache's own accounting, so a reader can tell a fast page from a cached
+    // one. A hit is a response served with no request at all; a revalidation is
+    // one that cost a round trip but no body.
+    if (const network::ResourceLoader *loader = current->loader()) {
+        resources << QString()
+                  << QStringLiteral("Cache: %1 entr(y|ies), %2 hit(s), %3 revalidation(s)")
+                         .arg(loader->cacheSize())
+                         .arg(loader->cacheHitCount())
+                         .arg(loader->revalidationCount());
+    }
     m_networkView->setPlainText(resources.join(u'\n'));
 
     // -------------------------------------------------------------- cookies

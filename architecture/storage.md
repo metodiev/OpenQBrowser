@@ -1,17 +1,19 @@
 # Storage
 
-`src/storage/` holds three in-memory models, and nothing is written to disk.
+`src/storage/` holds three in-memory models, and `src/network/` holds the HTTP
+cache. Nothing is written to disk.
 
 | File | Contents |
 | --- | --- |
 | `src/storage/History.h`, `History.cpp` | `HistoryEntry`, `HistoryStore`. |
 | `src/storage/Bookmarks.h`, `Bookmarks.cpp` | `Bookmark`, `BookmarkStore`. |
 | `src/storage/Cookies.h`, `Cookies.cpp` | `Cookie`, `SameSite`, `CookieJar`. |
+| `src/network/Cache.h`, `Cache.cpp` | `CachePolicy`, `CacheEntry`. |
 
-None of the three includes a Qt I/O class. There is no `QSettings`, no `QFile`, no
-`QStandardPaths` use anywhere in `src/`, so a reader can be certain that **nothing
-survives the process**: history, bookmarks, cookies and any future cache are gone
-when OpenQBrowser exits.
+None of them includes a Qt I/O class. There is no `QSettings`, no `QFile` read or
+write, no `QStandardPaths` use anywhere in `src/`, so a reader can be certain that
+**nothing survives the process**: history, bookmarks, cookies and cached responses
+are all gone when OpenQBrowser exits.
 
 ## What exists: history
 
@@ -158,12 +160,77 @@ socket: a cookie is stored and returned, a redirect's cookie survives, a relativ
 separately. The DevTools panel shows the whole jar in its **Cookies** tab, marking
 with `!` the cookies the jar would not send to the page on screen.
 
+## What exists: the HTTP cache
+
+`src/network/Cache.{h,cpp}` holds the policy, and `ResourceLoader` holds the
+entries. The split is deliberate: the freshness arithmetic is the part that is
+easy to get subtly wrong, and it is a pure function of headers, so it is testable
+without a socket.
+
+`CachePolicy` decides four things:
+
+* **Storability.** `no-store` refuses outright. So do `206` (part of a body) and
+  `304` (a verdict, not a representation). So does any `4xx` or `5xx`, whatever
+  its `Cache-Control` says: a stored failure outlives the outage that caused it.
+* **Lifetime.** `max-age` when present, else `Expires - Date` (never
+  `Expires - now`, which would drift with the clock), else a tenth of the time
+  since `Last-Modified`, capped at a day.
+* **Freshness.** An entry is fresh when its *age* is below its lifetime. Age is
+  measured from the origin's `Date`, not from arrival, because a proxy may have
+  held the response before this browser saw it.
+* **`Vary`.** A response varying on a header the cache does not key on is not
+  stored, since serving one variant for another is the bug `Vary` prevents.
+  `Accept-Encoding` is the one header treated as harmless, because this browser
+  sends a single fixed value.
+
+`CacheEntry` keeps the `Resource` whole, and that is not incidental: a
+revalidation answers `304` with no body, so the stored body is what gets served.
+Discarding it would turn every successful revalidation into an empty response.
+
+### Two reuse rules, not one
+
+An entry is reused without a request in two different circumstances, and mixing
+them up produces either a broken page or a slow one:
+
+* **Within one document load**, any stored entry is reused whatever its headers
+  say. This is a memo, not a cache: a page that references the same stylesheet ten
+  times makes one request, and a missing image is not retried once per element
+  that points at it. `generation` on the entry is what scopes this.
+* **Across loads**, the freshness rules decide. A fresh entry is served with no
+  request at all; a stale one with a validator becomes a conditional request
+  whose `304` costs a round trip and no body.
+
+`Page::load()` no longer clears the cache. It calls `beginLoad()`, which bumps the
+generation so the previous page's entries stop counting as this load's memo while
+remaining available under their own headers. Before this, every navigation threw
+away every response, so two pages sharing a stylesheet downloaded it twice —
+`tst_cache_flow.cpp::aSecondPageReusesASharedStylesheet()` pins exactly that.
+
+`Page::reload()` is the exception: it calls `invalidate()` on the document and
+every pending subresource, so a reload reaches the origin even for an entry that
+is still fresh. A reload marker is deliberately *not* consumed by the first cache
+lookup, because `startRequest()` consults the cache a second time after the queue
+and would otherwise serve the very entry the reload was meant to bypass. It is
+cleared when the response arrives or the request fails, so it cannot leak into a
+later fetch of the same URL.
+
+### What the cache does not do
+
+* **Nothing survives the process.** There is no disk cache.
+* **No `stale-while-revalidate` / `stale-if-error`.** Both are optional, and both
+  would serve an unconfirmed body.
+* **No `s-maxage`.** It addresses shared caches; this one serves a single user.
+* **No partial-content reuse.** `206` responses are not stored.
+* **No eviction policy.** Entries are dropped when the loader is destroyed or
+  `clearCache()` is called. A size cap belongs with the disk cache, where the
+  problem is real.
+
 ## What is planned
 
 | Feature | State |
 | --- | --- |
 | Cookie jar | **Implemented, in memory.** `Set-Cookie` parsing, origin- and path-scoped storage, expiry, `Secure`, `HttpOnly` and `SameSite`, plus the `Cookie` request header for every hop of a redirect chain. Dies with the process. |
-| HTTP cache | Not implemented beyond `ResourceLoader`'s in-memory map, which is cleared by `Page::stop()` and dies with the process. |
+| HTTP cache | **Implemented, in memory.** Conditional caching: `Cache-Control`, `Expires` and the `Last-Modified` heuristic for freshness, and `ETag` / `Last-Modified` for revalidation, so a stale entry costs a round trip and no body instead of a re-download. Dies with the process. |
 | Persistence of history and bookmarks | Not implemented. |
 | Session restore | Not implemented; a new window always opens one tab on `about:home`. |
 | Downloads directory, settings file, profile directory | Not implemented. |
@@ -216,18 +283,23 @@ way round. These constraints come from the code as it stands:
 
 6. **A disk cache must preserve the framing decision, not just the bytes.**
    `HttpResponse::body` reaching `ResourceLoader` has already had chunked framing
-   and content encoding removed, and `ResourceLoader`'s cache key is the
-   normalised URL string. A persistent cache that stored the raw wire bytes would
-   need to repeat that work; one that stores the decoded body plus `mimeType`,
-   `statusCode` and the response headers preserves the existing contract. The
-   `Resource` struct is already the natural on-disk record, and
-   `ResourceLoader::store()`/`cached()` are already the two entry points to
-   interpose.
+   and content encoding removed, and the cache is keyed by the normalised URL
+   string. A persistent cache that stored the raw wire bytes would need to repeat
+   that work; one that stores the decoded body plus `mimeType`, `statusCode` and
+   the response headers preserves the existing contract. `CacheEntry` is already
+   the natural on-disk record, and `ResourceLoader::absorbIntoCache()` /
+   `tryCache()` are already the two entry points to interpose. What a disk cache
+   adds is serialisation and an eviction policy; the freshness rules it needs are
+   in place.
 
-7. **Cache invalidation data does not exist.** No code reads `Cache-Control`,
-   `ETag`, `Last-Modified` or `Expires`; `HttpRequest` never sends
-   `If-None-Match` or `If-Modified-Since`. A persistent cache without those is a
-   cache that can only be cleared by hand, so freshness rules come first.
+7. **Cache invalidation data now exists, and is enforced in the live path.**
+   `CachePolicy` reads `Cache-Control` (`max-age`, `no-store`, `no-cache`,
+   `must-revalidate`, `public`, `private`), `Expires` and `Last-Modified`, and
+   `ResourceLoader` sends `If-None-Match` and `If-Modified-Since` and merges a 304
+   into the entry it validates. `Vary` is honoured by declining to store a
+   response that varies on a header the cache does not key on. This was the
+   precondition for a disk cache and is now met; what a disk cache adds is
+   surviving a restart, not correctness.
 
 8. **Where the files live.** Qt's `QStandardPaths::AppDataLocation` with the
    application name and version that `main.cpp` already sets

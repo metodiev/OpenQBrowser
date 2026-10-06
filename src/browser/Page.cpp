@@ -103,6 +103,13 @@ void Page::load(const network::Url &url)
 
     stop();
 
+    // Everything from here on belongs to a new load, so the loader stops treating
+    // the previous page's entries as this load's memo. They remain available
+    // under their own freshness rules, which is what makes navigating back to a
+    // page cheap.
+    if (m_loader)
+        m_loader->beginLoad();
+
     m_url = url;
     m_finalUrl = url;
     m_errorPage = false;
@@ -162,15 +169,31 @@ void Page::loadBuiltinPage(const oqb::network::Url &url)
 
 void Page::reload()
 {
-    if (m_documentUrl.isValid())
-        load(m_documentUrl);
+    if (!m_documentUrl.isValid())
+        return;
+
+    // A reload means "ask the origin again", so every response the page is about
+    // to request is marked stale. The document itself is included: a reload that
+    // served the document from cache would not be a reload at all.
+    if (m_loader) {
+        m_loader->invalidate(m_documentUrl);
+        for (const network::Url &url : m_pendingSubresources)
+            m_loader->invalidate(url);
+    }
+
+    load(m_documentUrl);
 }
 
 void Page::stop()
 {
     if (m_loader) {
         m_loader->cancelAll();
-        m_loader->clearCache();
+        // The cache deliberately survives a stop. A navigation no longer throws
+        // away every response the previous page fetched, so a stylesheet or logo
+        // shared by two pages is revalidated rather than downloaded again. The
+        // loader applies the response's own freshness rules instead, and
+        // beginLoad() below is what stops one load's entries from being treated
+        // as this load's memo.
     }
     m_state = State::Idle;
     m_inFlightSubresources = 0;

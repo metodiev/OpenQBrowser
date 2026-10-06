@@ -71,7 +71,7 @@ parsed and re-run through the CSS and layout stages; see `browser.md`.
 
 | Module | Public header | Responsibility |
 | --- | --- | --- |
-| `src/network` | `network/Url.h`, `HttpMessage.h`, `HttpClient.h`, `ResourceLoader.h` | RFC 3986 URLs, HTTP/1.1 and HTTPS, redirects, encodings, resource cache. |
+| `src/network` | `network/Url.h`, `HttpMessage.h`, `HttpClient.h`, `Cache.h`, `ResourceLoader.h` | RFC 3986 URLs, HTTP/1.1 and HTTPS, redirects, encodings, conditional caching, resource cache. |
 | `src/dom` | `dom/Node.h`, `dom/Document.h` | Node tree with attributes and classes; document metadata. |
 | `src/html` | `html/Tokenizer.h`, `html/Parser.h`, `html/Entities.h` | Tokenizer, character references, tree construction. |
 | `src/css` | `css/Tokenizer.h`, `css/Selector.h`, `css/Value.h`, `css/Stylesheet.h`, `css/Style.h` | Tokenizer, value model, selectors, stylesheet parsing, media queries, cascade. |
@@ -120,7 +120,8 @@ Page::load(url)
   |
   +-- otherwise          -> ResourceLoader::fetch(url)
                               |
-                              +-- cache hit -> emit finished(resource) immediately
+                              +-- fresh in cache -> emit finished(resource), no request
+                              +-- stale + validator -> conditional request -> 304 -> stored body
                               +-- file://   -> loadLocalFile()
                               +-- http(s)   -> HttpClient -> HttpResponse
          |
