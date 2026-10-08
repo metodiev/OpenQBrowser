@@ -50,6 +50,11 @@ struct Theme
     QColor tabActiveBorder;
     QColor iconColor;
     QColor iconColorActive;
+    /// The colour a control that cannot be used is drawn in. It is an explicit
+    /// colour rather than a faded one: a faded icon composites unpredictably
+    /// over the toolbar, and the two themes need different amounts of contrast
+    /// against very different backgrounds.
+    QColor iconColorDisabled;
     QColor fieldBackground;
     QColor fieldBorder;
     QColor fieldText;
@@ -68,6 +73,16 @@ struct Theme
 
     /// A crisp icon in `color`, painted at `size` logical pixels.
     QIcon icon(NavIcon which, const QColor &color, int size = 18) const;
+
+    /// An icon that also knows how it looks when its control is disabled.
+    ///
+    /// The disabled rendering is supplied as a pixmap in QIcon::Disabled mode,
+    /// which stops Qt from generating its own version by fading the normal one.
+    /// That matters because Qt's fade is applied on top of whatever colour is
+    /// given: a colour chosen to read as "unavailable" came out almost invisible
+    /// once Qt had faded it again.
+    QIcon icon(NavIcon which, const QColor &color, const QColor &disabledColor,
+               int size = 18) const;
 
     /// The same icon in the theme's default icon colour.
     QIcon icon(NavIcon which, int size = 18) const;

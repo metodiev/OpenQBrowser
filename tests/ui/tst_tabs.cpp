@@ -9,6 +9,8 @@
 #include <QHostAddress>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QWebEngineHistory>
+#include <QWebEngineUrlScheme>
 #include <QWebEnginePage>
 #include <QWebEngineProfile>
 #include <QWebEngineView>
@@ -64,6 +66,7 @@ private slots:
     void switchingTabsShowsThatTab();
     void shortcutOpensATab();
     void tabShowsThePageIcon();
+    void backAndForwardWalkTheHistory();
     /// Writes a PNG of the window so the chrome can be reviewed by eye.
     ///
     /// It is skipped unless OQB_UI_PREVIEW is set to the file to write: a
@@ -87,6 +90,17 @@ private:
     {
         const QList<ui::WebTab *> tabs = window.findChildren<ui::WebTab *>();
         return !tabs.isEmpty() && tabs.last()->isLoading();
+    }
+    /// The toolbar's back and forward buttons, found by the names the theme
+    /// gives them.
+    static QToolButton *navButton(ui::MainWindow *window, const QString &name)
+    {
+        return window->findChild<QToolButton *>(name);
+    }
+    /// The address bar, found by the name the theme gives it.
+    static QLineEdit *windowAddressBar(ui::MainWindow *window)
+    {
+        return window->findChild<QLineEdit *>(QStringLiteral("AddressBar"));
     }
 };
 
@@ -353,6 +367,90 @@ void TabsTest::writePreview()
     const QPixmap shot = window.grab();
     QVERIFY2(!shot.isNull(), "the window produced no image");
     QVERIFY2(shot.save(target), qPrintable(QStringLiteral("cannot write ") + target));
+}
+
+void TabsTest::backAndForwardWalkTheHistory()
+{
+    // A local server, so the test does not depend on the network. It serves a
+    // page that names its own address, which is how the test tells which one it
+    // is looking at.
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    connect(&server, &QTcpServer::newConnection, &server, [&server] {
+        while (QTcpSocket *socket = server.nextPendingConnection()) {
+            connect(socket, &QTcpSocket::readyRead, socket, [socket] {
+                const QByteArray request = socket->readAll();
+                const QByteArray path = request.mid(4, request.indexOf(' ', 4) - 4);
+                const QByteArray body =
+                    "<html><head><title>" + path + "</title></head><body>" + path
+                    + "</body></html>";
+                socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: "
+                              + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n"
+                              + body);
+                socket->disconnectFromHost();
+            });
+        }
+    });
+
+    const QString first = QStringLiteral("http://127.0.0.1:%1/first").arg(server.serverPort());
+    const QString second = QStringLiteral("http://127.0.0.1:%1/second").arg(server.serverPort());
+
+    ui::MainWindow window;
+    window.show();
+
+    QToolButton *back = navButton(&window, QStringLiteral("BackButton"));
+    QToolButton *forward = navButton(&window, QStringLiteral("ForwardButton"));
+    QVERIFY2(back, "the toolbar must have a back button");
+    QVERIFY2(forward, "the toolbar must have a forward button");
+
+    ui::WebTab *tab = window.findChild<ui::WebTab *>();
+    QVERIFY(tab);
+
+    // The start page has to be somewhere the user can come back to, or Back is
+    // dead the first time a site is opened.
+    // The start page has to be a real navigation, or Back is dead the first
+    // time a site is opened.
+    QSignalSpy startDone(tab, &ui::WebTab::loadFinished);
+    QVERIFY2(waitFor([&] { return startDone.count() > 0; }, 10000),
+             "the start page did not load");
+    QCOMPARE(tab->view()->history()->count(), 1);
+
+    // Two pages in the same tab, so there is somewhere to go back to. The waits
+    // are on the load signals rather than on the tab's own state, which is set
+    // synchronously by navigate() and would let the test race ahead.
+    const auto loadAndWait = [&](const QString &url) {
+        QSignalSpy finished(tab, &ui::WebTab::loadFinished);
+        window.openUrl(network::Url::parse(url));
+        if (!waitFor([&] { return finished.count() > 0; }, 15000))
+            return false;
+        return waitFor([&] { return !tab->isLoading(); }, 5000);
+    };
+
+    QVERIFY2(loadAndWait(first), "the first page did not load");
+    QCOMPARE(tab->url().toString(), first);
+    QVERIFY2(loadAndWait(second), "the second page did not load");
+    QCOMPARE(tab->url().toString(), second);
+
+    // With two entries, back is available and forward is not.
+    QVERIFY2(waitFor([&] { return back->isEnabled(); }, 5000),
+             "back must be enabled after visiting a second page");
+    QVERIFY2(!forward->isEnabled(), "forward must be disabled at the newest page");
+
+    // Clicking the toolbar button goes to the previous page.
+    back->click();
+    QVERIFY2(waitFor([&] { return tab->url().toString() == first; }, 15000),
+             "the back button did not return to the previous page");
+    QVERIFY(waitFor([&] { return !tab->isLoading(); }, 15000));
+
+    // And forward returns to the one just left.
+    QVERIFY2(waitFor([&] { return forward->isEnabled(); }, 5000),
+             "forward must be enabled after going back");
+    forward->click();
+    QVERIFY2(waitFor([&] { return tab->url().toString() == second; }, 15000),
+             "the forward button did not return to the next page");
+
+    // The address bar follows, which is how the user sees where they are.
+    QTRY_COMPARE_WITH_TIMEOUT(windowAddressBar(&window)->text(), second, 5000);
 }
 
 QTEST_MAIN(TabsTest)

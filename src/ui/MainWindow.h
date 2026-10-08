@@ -99,6 +99,11 @@ private:
     QLineEdit *m_addressBar = nullptr;
     QLabel *m_statusLabel = nullptr;
     QProgressBar *m_progress = nullptr;
+    /// True while the user is typing into the address bar, so a finishing load
+    /// cannot overwrite what they are writing. Set by textEdited and cleared
+    /// when editing finishes, which is what distinguishes typing from a click
+    /// that merely put the caret in the field.
+    bool m_addressBarEdited = false;
 
     QAction *m_newTabAction = nullptr;
     QAction *m_closeTabAction = nullptr;

@@ -216,7 +216,7 @@ QString homePage(const QString &version, int tabCount)
         {QStringLiteral("blank"), QStringLiteral("An empty document")},
     };
     for (const QString &name : pageNames()) {
-        body += QStringLiteral("<a class=\"card\" href=\"about:%1\">"
+        body += QStringLiteral("<a class=\"card\" href=\"oqb:%1\">"
                                "<div class=\"title\">about:%1</div>"
                                "<div class=\"desc\">%2</div></a>\n")
                     .arg(name, escape(descriptions.value(name, QStringLiteral("A built-in page"))));
@@ -240,7 +240,7 @@ QString homePage(const QString &version, int tabCount)
 
     body += QStringLiteral("<h2>Session</h2>\n");
     body += QStringLiteral("<p class=\"meta\">Version %1 &middot; %2 tab%3 open &middot; "
-                           "<a href=\"about:version\">details</a></p>\n")
+                           "<a href=\"oqb:version\">details</a></p>\n")
                 .arg(escape(version))
                 .arg(tabCount)
                 .arg(tabCount == 1 ? QString() : QStringLiteral("s"));
@@ -283,7 +283,7 @@ QString versionPage(const QString &version)
     body += QStringLiteral("</div>\n");
 
     body += QStringLiteral("<p class=\"meta\">Qt WebEngine reports its Chromium version in "
-                           "the card above. See <a href=\"about:home\">the start page</a>.</p>\n");
+                           "the card above. See <a href=\"oqb:home\">the start page</a>.</p>\n");
 
     return pageShell(QStringLiteral("Version"), body);
 }
@@ -352,7 +352,7 @@ QString aboutAbout()
 
     body += QStringLiteral("<div class=\"grid\">\n");
     for (const QString &name : pageNames()) {
-        body += QStringLiteral("<a class=\"card\" href=\"about:%1\">"
+        body += QStringLiteral("<a class=\"card\" href=\"oqb:%1\">"
                                "<div class=\"title\">about:%1</div>"
                                "<div class=\"desc\">%2</div></a>\n")
                     .arg(name, escape(descriptions.value(name, QStringLiteral("A built-in page"))));
@@ -460,7 +460,7 @@ QString errorPage(const network::Url &url, const QString &kind, const QString &d
                     .arg(escape(details));
     }
 
-    body += QStringLiteral("<p style=\"margin-top:24px\"><a href=\"about:home\">Start page</a></p>\n");
+    body += QStringLiteral("<p style=\"margin-top:24px\"><a href=\"oqb:home\">Start page</a></p>\n");
 
     return pageShell(heading, body, QStringLiteral(" error"));
 }

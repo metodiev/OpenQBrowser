@@ -22,6 +22,14 @@ void paintIcon(QPainter *painter, NavIcon which, const QColor &color)
     pen.setCapStyle(Qt::RoundCap);
     pen.setJoinStyle(Qt::RoundJoin);
 
+    // The navigation controls use the same weight as the rest of the chrome.
+    // Drawn heavier than this they read as chunky rather than as part of a
+    // finished interface: at a 16px icon a 2.3-unit stroke is 11.5% of the box,
+    // where a browser's own glyphs sit near 9%.
+    QPen navPen(color, 1.75);
+    navPen.setCapStyle(Qt::RoundCap);
+    navPen.setJoinStyle(Qt::RoundJoin);
+
     const QPen hairline = [&] {
         QPen p(color, 1.6);
         p.setCapStyle(Qt::RoundCap);
@@ -32,34 +40,51 @@ void paintIcon(QPainter *painter, NavIcon which, const QColor &color)
     painter->setRenderHint(QPainter::Antialiasing, true);
 
     switch (which) {
-    case NavIcon::Back: {
-        QPainterPath path;
-        path.moveTo(12.4, 4.6);
-        path.lineTo(7.0, 10.0);
-        path.lineTo(12.4, 15.4);
-        painter->setPen(pen);
-        painter->drawPath(path);
-        break;
-    }
+    case NavIcon::Back:
     case NavIcon::Forward: {
-        QPainterPath path;
-        path.moveTo(7.6, 4.6);
-        path.lineTo(13.0, 10.0);
-        path.lineTo(7.6, 15.4);
-        painter->setPen(pen);
-        painter->drawPath(path);
+        // A solid triangle rather than a stroke, which is a shape that survives
+        // being drawn at 16 pixels: a thin chevron loses its shape to
+        // antialiasing, where a filled area keeps its silhouette.
+        //
+        // The triangle is filled *and* stroked with a round-joined pen of the
+        // same colour. The stroke is what rounds the corners - a raw filled
+        // triangle looks like a shard at this size, because its three points are
+        // the sharpest thing on the toolbar.
+        const bool back = which == NavIcon::Back;
+        const double tipX = back ? 6.0 : 14.0;
+        const double baseX = back ? 13.5 : 6.5;
+
+        QPainterPath triangle;
+        triangle.moveTo(tipX, 10.0);
+        triangle.lineTo(baseX, 4.8);
+        triangle.lineTo(baseX, 15.2);
+        triangle.closeSubpath();
+
+        QPen solid(color, 1.7);
+        solid.setJoinStyle(Qt::RoundJoin);
+        solid.setCapStyle(Qt::RoundCap);
+        painter->setPen(solid);
+        painter->setBrush(color);
+        painter->drawPath(triangle);
         break;
     }
     case NavIcon::Reload: {
-        // An almost-closed circle with an arrow head, which reads as "again"
-        // at any size.
-        painter->setPen(pen);
-        painter->drawArc(QRectF(4.2, 4.2, 11.6, 11.6), 60 * 16, 280 * 16);
+        // A circle broken at the top right, with the arrow head at the top
+        // pointing the way the stroke travels. The head is filled and its base
+        // sits on the end of the arc, so the two read as one mark; an outline
+        // head placed beside the gap looked like a separate floating triangle.
+        const QRectF circle(4.5, 4.5, 11.0, 11.0);
+        painter->setPen(navPen);
+        painter->setBrush(Qt::NoBrush);
+        // The sweep starts at the lower edge of the gap and runs clockwise,
+        // ending at the top of the circle.
+        painter->drawArc(circle, 48 * 16, -315 * 16);
 
+        const QPointF tip(13.6, 4.5);
         QPainterPath head;
-        head.moveTo(10.4, 2.6);
-        head.lineTo(13.6, 5.2);
-        head.lineTo(10.4, 7.6);
+        head.moveTo(tip);
+        head.lineTo(10.1, 2.4);
+        head.lineTo(10.1, 6.8);
         head.closeSubpath();
         painter->setPen(Qt::NoPen);
         painter->setBrush(color);
@@ -67,26 +92,39 @@ void paintIcon(QPainter *painter, NavIcon which, const QColor &color)
         break;
     }
     case NavIcon::Stop: {
-        painter->setPen(pen);
-        painter->drawLine(QPointF(5.8, 5.8), QPointF(14.2, 14.2));
-        painter->drawLine(QPointF(14.2, 5.8), QPointF(5.8, 14.2));
+        painter->setPen(navPen);
+        painter->drawLine(QPointF(5.9, 5.9), QPointF(14.1, 14.1));
+        painter->drawLine(QPointF(14.1, 5.9), QPointF(5.9, 14.1));
         break;
     }
     case NavIcon::Home: {
+        // A house, rather than a roof floating over a box: the eaves line is
+        // where the roof and the walls meet, so the two strokes join visually.
         QPainterPath roof;
-        roof.moveTo(4.2, 9.6);
-        roof.lineTo(10.0, 4.4);
-        roof.lineTo(15.8, 9.6);
-        painter->setPen(pen);
+        roof.moveTo(3.3, 9.9);
+        roof.lineTo(10.0, 3.5);
+        roof.lineTo(16.7, 9.9);
+
+        QPainterPath walls;
+        walls.moveTo(5.7, 9.5);
+        walls.lineTo(5.7, 16.3);
+        walls.lineTo(14.3, 16.3);
+        walls.lineTo(14.3, 9.5);
+
+        painter->setPen(navPen);
         painter->setBrush(Qt::NoBrush);
         painter->drawPath(roof);
+        painter->drawPath(walls);
 
-        QPainterPath body;
-        body.moveTo(6.0, 9.2);
-        body.lineTo(6.0, 15.4);
-        body.lineTo(14.0, 15.4);
-        body.lineTo(14.0, 9.2);
-        painter->drawPath(body);
+        // The door is what makes the outline read as a house at tab size rather
+        // than as an empty box under a triangle.
+        QPainterPath door;
+        door.moveTo(8.4, 16.3);
+        door.lineTo(8.4, 12.5);
+        door.lineTo(11.6, 12.5);
+        door.lineTo(11.6, 16.3);
+        painter->setPen(QPen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter->drawPath(door);
         break;
     }
     case NavIcon::NewTab: {
@@ -213,9 +251,12 @@ QPixmap paintPixmap(NavIcon which, const QColor &color, int size, qreal dpr)
     pixmap.fill(Qt::transparent);
 
     QPainter painter(&pixmap);
-    // The icon is authored on a 20x20 grid; scaling here means the geometry
-    // above never has to know the requested size.
-    painter.scale(pixelSize / 20.0, pixelSize / 20.0);
+    // The icon is authored on a 20x20 grid. The scale is by the *logical* size,
+    // not by the pixel count: a QPainter drawing onto a pixmap whose
+    // devicePixelRatio is set already works in logical coordinates, so scaling
+    // by the pixel count as well drew everything at twice its size and clipped
+    // it to the top-left corner on a Retina display.
+    painter.scale(size / 20.0, size / 20.0);
     paintIcon(&painter, which, color);
     painter.end();
 
@@ -239,6 +280,7 @@ Theme Theme::light()
     theme.tabActiveBorder = QColor(0xDC, 0xE0, 0xE6);
     theme.iconColor = QColor(0x45, 0x4C, 0x57);
     theme.iconColorActive = QColor(0x1B, 0x21, 0x2B);
+    theme.iconColorDisabled = QColor(0xB0, 0xB6, 0xBF);
     theme.fieldBackground = QColor(0xFF, 0xFF, 0xFF);
     theme.fieldBorder = QColor(0xD6, 0xDB, 0xE2);
     theme.fieldText = QColor(0x1B, 0x21, 0x2B);
@@ -264,6 +306,7 @@ Theme Theme::dark()
     theme.tabActiveBorder = QColor(0x35, 0x3A, 0x42);
     theme.iconColor = QColor(0xC2, 0xC9, 0xD4);
     theme.iconColorActive = QColor(0xF2, 0xF5, 0xF9);
+    theme.iconColorDisabled = QColor(0x5E, 0x66, 0x70);
     theme.fieldBackground = QColor(0x1A, 0x1D, 0x22);
     theme.fieldBorder = QColor(0x3A, 0x40, 0x49);
     theme.fieldText = QColor(0xF2, 0xF5, 0xF9);
@@ -331,6 +374,12 @@ QToolButton:hover {
 }
 QToolButton:pressed {
     background: %(chromeBorder)s;
+}
+/* A disabled control must not light up under the pointer; without this rule the
+   hover colour above still wins, because both selectors weigh the same and the
+   later one decides. */
+QToolButton:disabled {
+    background: transparent;
 }
 QToolButton#NewTabButton {
     padding: 5px;
@@ -434,6 +483,20 @@ QIcon Theme::icon(NavIcon which, const QColor &color, int size) const
 {
     const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
     return QIcon(paintPixmap(which, color, size, dpr));
+}
+
+QIcon Theme::icon(NavIcon which, const QColor &color, const QColor &disabledColor,
+                  int size) const
+{
+    const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+
+    QIcon icon;
+    // Added for both modes, in that order: with a Disabled pixmap present Qt
+    // uses it instead of deriving one, so the colour asked for is the colour
+    // drawn.
+    icon.addPixmap(paintPixmap(which, color, size, dpr), QIcon::Normal);
+    icon.addPixmap(paintPixmap(which, disabledColor, size, dpr), QIcon::Disabled);
+    return icon;
 }
 
 QIcon Theme::icon(NavIcon which, int size) const

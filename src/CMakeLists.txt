@@ -120,6 +120,7 @@ endif()
 add_library(oqb_ui STATIC
     ui/Theme.cpp
     ui/TabBar.cpp
+    ui/BuiltinScheme.cpp
     ui/WebTab.cpp
     ui/MainWindow.cpp
 )

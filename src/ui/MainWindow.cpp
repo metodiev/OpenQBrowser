@@ -1,5 +1,8 @@
 #include "ui/MainWindow.h"
 
+#include "browser/BuiltinPages.h"
+
+#include "ui/BuiltinScheme.h"
 #include "ui/TabBar.h"
 #include "ui/Theme.h"
 #include "ui/WebTab.h"
@@ -17,6 +20,7 @@
 #include <QShortcut>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QToolButton>
 #include <QStyleHints>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -28,14 +32,24 @@ namespace oqb::ui {
 
 namespace {
 
+/// The size every toolbar glyph is drawn at, so the icons stay in step with each
+/// other and with the buttons that hold them. A mature browser's toolbar glyphs
+/// sit around 16px in a 28px target, which is the proportion used here: larger
+/// than this and the chrome starts to look like a toolbar of stickers.
+constexpr int kIconSize = 16;
+
+/// The square the toolbar buttons occupy. Large enough to be a comfortable
+/// target at 16px of artwork, without making the toolbar feel heavy.
+constexpr int kButtonSize = 28;
+
 /// A flat icon button for the toolbar and the tab strip. The theme styles it;
 /// this only sets what the stylesheet cannot express.
 QToolButton *makeIconButton(NavIcon icon, const Theme &theme, const QString &toolTip,
-                            int size = 30)
+                            int size = kButtonSize)
 {
     auto *button = new QToolButton;
-    button->setIcon(theme.icon(icon, theme.iconColor, 17));
-    button->setIconSize(QSize(17, 17));
+    button->setIcon(theme.icon(icon, theme.iconColor, theme.iconColorDisabled, kIconSize));
+    button->setIconSize(QSize(kIconSize, kIconSize));
     button->setFixedSize(size, size);
     button->setToolTip(toolTip);
     button->setCursor(Qt::ArrowCursor);
@@ -61,6 +75,17 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
     m_profile = QWebEngineProfile::defaultProfile();
     if (!settings.userAgent.isEmpty())
         m_profile->setHttpUserAgent(settings.userAgent);
+
+    // The built-in pages are served over the browser's own scheme, so that
+    // navigating to one is a real navigation with a history entry: that is what
+    // makes Back work after leaving the start page.
+    installBuiltinSchemeHandler(m_profile, [this](const QString &pageName) {
+        return browser::builtin::documentFor(network::Url::parse(QStringLiteral("about:")
+                                                                 + pageName),
+                                             QStringLiteral(OPENQBROWSER_VERSION),
+                                             m_settings.viewportWidth, &m_history, &m_bookmarks,
+                                             tabCount());
+    });
 
     // ------------------------------------------------------------ structure
     //
@@ -104,9 +129,13 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
     toolLayout->setSpacing(4);
 
     m_backButton = makeIconButton(NavIcon::Back, m_theme, tr("Back (Alt+Left)"));
+    m_backButton->setObjectName(QStringLiteral("BackButton"));
     m_forwardButton = makeIconButton(NavIcon::Forward, m_theme, tr("Forward (Alt+Right)"));
+    m_forwardButton->setObjectName(QStringLiteral("ForwardButton"));
     m_reloadButton = makeIconButton(NavIcon::Reload, m_theme, tr("Reload (F5)"));
+    m_reloadButton->setObjectName(QStringLiteral("ReloadButton"));
     m_homeButton = makeIconButton(NavIcon::Home, m_theme, tr("Home"));
+    m_homeButton->setObjectName(QStringLiteral("HomeButton"));
 
     toolLayout->addWidget(m_backButton);
     toolLayout->addWidget(m_forwardButton);
@@ -122,7 +151,9 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
     toolLayout->addWidget(m_addressBar, 1);
 
     m_bookmarkButton = makeIconButton(NavIcon::Star, m_theme, tr("Bookmark this page"));
+    m_bookmarkButton->setObjectName(QStringLiteral("BookmarkButton"));
     m_menuButton = makeIconButton(NavIcon::Menu, m_theme, tr("Menu"));
+    m_menuButton->setObjectName(QStringLiteral("MenuButton"));
     toolLayout->addWidget(m_bookmarkButton);
     toolLayout->addWidget(m_menuButton);
 
@@ -169,6 +200,16 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
     connect(m_newTabButton, &QToolButton::clicked, this, &MainWindow::openNewTab);
 
     connect(m_addressBar, &QLineEdit::returnPressed, this, &MainWindow::onAddressEntered);
+    // textEdited fires only for changes the user makes, so it is exactly the
+    // "the user is typing" signal the address-bar update needs. Editing is over
+    // on Enter or when the field loses focus, after which the address follows
+    // the page again.
+    connect(m_addressBar, &QLineEdit::textEdited, this, [this] {
+        m_addressBarEdited = true;
+    });
+    connect(m_addressBar, &QLineEdit::editingFinished, this, [this] {
+        m_addressBarEdited = false;
+    });
     connect(m_backButton, &QToolButton::clicked, this, &MainWindow::onBack);
     connect(m_forwardButton, &QToolButton::clicked, this, &MainWindow::onForward);
     connect(m_reloadButton, &QToolButton::clicked, this, &MainWindow::onReloadOrStop);
@@ -274,12 +315,11 @@ void MainWindow::applyTheme()
 
     // The painted icons are not styled by the stylesheet, so they are rebuilt
     // for the new colours here.
-    const auto refresh = [this](QToolButton *button, NavIcon icon, const QString &tip,
-                                bool active = false) {
+    const auto refresh = [this](QToolButton *button, NavIcon icon, const QString &tip) {
         if (!button)
             return;
-        button->setIcon(m_theme.icon(icon, active ? m_theme.iconColorActive : m_theme.iconColor,
-                                     17));
+        button->setIcon(m_theme.icon(icon, m_theme.iconColor, m_theme.iconColorDisabled,
+                                     kIconSize));
         button->setToolTip(tip);
     };
 
@@ -517,7 +557,8 @@ void MainWindow::onToggleBookmark()
     const bool added = m_bookmarks.toggle(tab->url(), tab->title());
     m_bookmarkButton->setIcon(
         m_theme.icon(added ? NavIcon::StarFilled : NavIcon::Star,
-                     added ? m_theme.accent : m_theme.iconColor, 17));
+                     added ? m_theme.accent : m_theme.iconColor, m_theme.iconColorDisabled,
+                     kIconSize));
     m_statusLabel->setText(added ? tr("Bookmarked") : tr("Bookmark removed"));
 }
 
@@ -587,33 +628,24 @@ void MainWindow::updateNavigationState()
     m_backAction->setEnabled(canGoBack);
     m_forwardAction->setEnabled(canGoForward);
 
-    // A disabled button should read as unavailable, which the stylesheet cannot
-    // express for a painted icon.
-    const auto tint = [this](QToolButton *button, NavIcon icon, bool enabled,
-                             const QString &tip) {
-        QColor color = m_theme.iconColor;
-        if (!enabled)
-            color.setAlpha(80);
-        button->setIcon(m_theme.icon(icon, color, 17));
-        button->setEnabled(enabled);
-        button->setToolTip(tip);
-    };
-    tint(m_backButton, NavIcon::Back, canGoBack, tr("Back (Alt+Left)"));
-    tint(m_forwardButton, NavIcon::Forward, canGoForward, tr("Forward (Alt+Right)"));
-
     // The toolbar button shows Stop while loading and Reload when idle.
     m_reloadButton->setIcon(m_theme.icon(tab->isLoading() ? NavIcon::Stop : NavIcon::Reload,
-                                         m_theme.iconColor, 17));
+                                         m_theme.iconColor, kIconSize));
     m_reloadButton->setToolTip(tab->isLoading() ? tr("Stop loading") : tr("Reload (F5)"));
 
-    // The address bar is only rewritten when it does not have focus, so typing
-    // is never interrupted by a load finishing.
-    if (!m_addressBar->hasFocus())
+    // The address bar follows the page, but only while the user is not typing
+    // into it. Focus alone is the wrong test: clicking the field to read the URL
+    // leaves it focused, and the address would then stop tracking navigation.
+    // The edit flag is what distinguishes reading from typing.
+    if (!m_addressBar->hasFocus() || !m_addressBarEdited) {
         m_addressBar->setText(tab->url().toString());
+        m_addressBarEdited = false;
+    }
 
     const bool bookmarked = m_bookmarks.contains(tab->url());
     m_bookmarkButton->setIcon(m_theme.icon(bookmarked ? NavIcon::StarFilled : NavIcon::Star,
-                                           bookmarked ? m_theme.accent : m_theme.iconColor, 17));
+                                           bookmarked ? m_theme.accent : m_theme.iconColor,
+                                           m_theme.iconColorDisabled, kIconSize));
 
     if (tab->isLoading()) {
         m_statusLabel->setText(tr("Loading %1…").arg(tab->url().displayHost()));

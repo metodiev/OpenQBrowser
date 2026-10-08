@@ -3,6 +3,7 @@
 #include "browser/BuiltinPages.h"
 #include "storage/Bookmarks.h"
 #include "storage/History.h"
+#include "ui/BuiltinScheme.h"
 
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -17,6 +18,24 @@
 namespace oqb::ui {
 
 namespace {
+
+/// Translates a built-in page's internal address into the `about:` URL the rest
+/// of the browser speaks, and leaves anything else alone.
+///
+/// The window, its menus and the address bar all work in `about:` terms, so the
+/// translation lives here at the one boundary where Chromium is involved.
+network::Url urlFromView(const QUrl &url)
+{
+    if (url.scheme() == QLatin1String(kBuiltinScheme)) {
+        QString name = url.path();
+        if (name.startsWith(u'/'))
+            name.remove(0, 1);
+        if (name.isEmpty())
+            name = QStringLiteral("home");
+        return network::Url::parse(QStringLiteral("about:") + name);
+    }
+    return network::Url::parse(url.toString());
+}
 
 /// The page icon cache, keyed by the icon URL.
 ///
@@ -158,7 +177,7 @@ void WebTab::connectView()
     });
 
     connect(m_view, &QWebEngineView::urlChanged, this, [this](const QUrl &url) {
-        m_url = network::Url::parse(url.toString());
+        m_url = urlFromView(url);
         emit urlChanged(m_url);
     });
 
@@ -286,11 +305,12 @@ void WebTab::detachDevTools()
 
 void WebTab::loadAbout(const network::Url &url)
 {
-    const QString html = browser::builtin::documentFor(
-        url, QStringLiteral(OPENQBROWSER_VERSION), 1280, m_history, m_bookmarks, m_tabCount);
-
+    // The page is served by the built-in scheme handler rather than loaded as a
+    // document, so it is a real navigation: it gets an address, a history entry
+    // (which is what makes Back work) and a working reload.
+    const QString name = url.aboutPage().isEmpty() ? QStringLiteral("home") : url.aboutPage();
     m_url = url;
-    m_view->setHtml(html, QUrl(QStringLiteral("about:") + url.aboutPage()));
+    m_view->load(QUrl(QString::fromLatin1(kBuiltinScheme) + u':' + name));
 }
 
 void WebTab::recordVisit()

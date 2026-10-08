@@ -13,6 +13,8 @@
 
 #include "browser/PageSettings.h"
 #include "network/Url.h"
+#include "browser/BuiltinPages.h"
+#include "ui/BuiltinScheme.h"
 #include "ui/MainWindow.h"
 
 using namespace oqb;
@@ -166,6 +168,10 @@ int main(int argc, char **argv)
     // the application object exists.
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
 
+    // Qt requires a URL scheme to be registered before the application object
+    // exists. The built-in pages are served from it.
+    oqb::ui::registerBuiltinScheme();
+
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral(OPENQBROWSER_APP_NAME));
     QCoreApplication::setApplicationVersion(QStringLiteral(OPENQBROWSER_VERSION));
@@ -222,6 +228,14 @@ int main(int argc, char **argv)
                        "Chrome/126.0.0.0 Safari/537.36 OpenQBrowser/%1")
             .arg(QStringLiteral(OPENQBROWSER_VERSION)));
     profile->settings()->setAttribute(QWebEngineSettings::AutoLoadImages, settings.loadImages);
+
+    // The built-in pages are served from the browser's own scheme, so the
+    // headless modes can report on them too.
+    ui::installBuiltinSchemeHandler(profile, [](const QString &pageName) {
+        return browser::builtin::documentFor(
+            network::Url::parse(QStringLiteral("about:") + pageName),
+            QStringLiteral(OPENQBROWSER_VERSION), 1280);
+    });
 
     const bool wantsReport = options.dumpDom || options.screenshot;
     if (!wantsReport)
