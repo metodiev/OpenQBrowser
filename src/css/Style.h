@@ -6,6 +6,7 @@
 #include <QPair>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 
 #include "css/Grid.h"
 #include "css/Stylesheet.h"
@@ -381,11 +382,32 @@ private:
         quint32 specificity = 0;
         int originRank = 0; ///< -1 user agent, 0 presentational hints, 1 author, 2 inline.
         int order = 0;
+        /// Global source position; breaks ties `order` cannot, because each
+        /// author sheet numbers its own rules from zero.
+        quint32 sourceIndex = 0;
         QString selectorText;
         bool fromInline = false;
     };
 
+    /// One rule selector that may match an element, indexed by its subject.
+    ///
+    /// The index removes the O(elements x rules) brute force that made styling a
+    /// real page quadratic: instead of testing every rule against every element,
+    /// an element tests only the rules whose right-most compound could match it.
+    struct IndexedRule
+    {
+        const StyleRule *rule = nullptr;
+        const Selector *selector = nullptr;
+        /// Position in source order across all sheets. Author sheets are each
+        /// parsed with order numbering starting at zero, so `rule.order` alone
+        /// cannot tell two rules from different sheets apart; this index can.
+        quint32 sourceIndex = 0;
+    };
+
     ComputedStyle computeFor(const dom::Element *element, const ComputedStyle *parentStyle);
+    /// Rebuilds m_effectiveRules and m_ruleIndex from the current sheets and
+    /// viewport. Called once per computeStyles() pass.
+    void buildRuleIndex();
     void inheritFrom(ComputedStyle *style, const ComputedStyle *parent);
     /// Applies one declaration. `inheritedFontSize` is the size the element
     /// would have with no font-size declaration at all, which is what relative
@@ -397,6 +419,17 @@ private:
 
     StyleContext m_context;
     QList<Stylesheet> m_sheets;
+
+    /// Every rule whose media query matches the current viewport, built once per
+    /// pass. m_ruleIndex points into these, so the vector must not be resized
+    /// while the index is in use.
+    QVector<StyleRule> m_effectiveRules;
+    /// Selectors bucketed by a key derived from their right-most compound's id,
+    /// class or type, so an element only tests the rules that can match it.
+    QHash<QString, QVector<IndexedRule>> m_ruleIndex;
+    /// Selectors whose subject has no id, class or type: tested against every
+    /// element, like the universal selector itself.
+    QVector<IndexedRule> m_universalRules;
 
     /// The styles themselves, owned here so that each has a fixed address: the
     /// box tree stores a pointer to its style and must be able to rely on it.

@@ -3,11 +3,53 @@
 #include <QTimer>
 #include <QTcpSocket>
 #include <QSslSocket>
+#include <QSslConfiguration>
 
 #include <algorithm>
 
 namespace oqb::network {
 namespace {
+
+/// The authority (host:port) a TLS session is associated with. Resuming a
+/// session against a different host or port is never attempted.
+QString authorityFor(const Url &url)
+{
+    return url.host().toLower() + u':' + QString::number(url.effectivePort());
+}
+
+/// TLS session tickets, keyed by authority.
+///
+/// QSslSocket tears down its TLS state when the socket closes, so a connection
+/// that is finished discards the session the handshake negotiated. A page like
+/// nova.bg makes well over a hundred requests to the same CDN host; without this
+/// every one of them pays for a full TLS handshake. Keeping the ticket lets the
+/// next connection to the same host resume the session - the ticket is opaque
+/// bytes the server handed us, never a key - which turns those handshakes into
+/// the one round trip a resume needs.
+struct TlsSessionCache
+{
+    static constexpr int kMaxEntries = 64;
+    QHash<QString, QByteArray> tickets;
+
+    QByteArray ticketFor(const QString &authority) const { return tickets.value(authority); }
+
+    void store(const QString &authority, const QByteArray &ticket)
+    {
+        if (ticket.isEmpty())
+            return;
+        // The cache is tiny and entries are cheap to re-acquire, so an eviction
+        // of everything is simpler and safer than trying to rank entries.
+        if (tickets.size() >= kMaxEntries && !tickets.contains(authority))
+            tickets.clear();
+        tickets.insert(authority, ticket);
+    }
+};
+
+TlsSessionCache &tlsSessionCache()
+{
+    static TlsSessionCache cache;
+    return cache;
+}
 
 /// Splits the header block into a status line and header entries.
 bool parseHead(const QByteArray &head, HttpResponse *response)
@@ -142,6 +184,16 @@ void HttpClient::beginRequest(const HttpRequest &request)
     if (auto *ssl = qobject_cast<QSslSocket *>(socket)) {
         connect(ssl, &QSslSocket::encrypted, this, &HttpClient::onEncrypted);
         connect(ssl, &QSslSocket::sslErrors, this, &HttpClient::onSslErrors);
+        connect(ssl, &QSslSocket::newSessionTicketReceived, this, &HttpClient::onNewSessionTicket);
+
+        // Hand a remembered session ticket over before the handshake begins, so
+        // that a repeat visit to the same host resumes instead of renegotiating.
+        const QByteArray ticket = tlsSessionCache().ticketFor(authorityFor(request.url));
+        if (!ticket.isEmpty()) {
+            QSslConfiguration configuration = ssl->sslConfiguration();
+            configuration.setSessionTicket(ticket);
+            ssl->setSslConfiguration(configuration);
+        }
     }
 
     m_state = State::Connecting;
@@ -171,6 +223,15 @@ void HttpClient::onConnected()
 
 void HttpClient::onEncrypted()
 {
+    // Some TLS versions deliver the session ticket during the handshake rather
+    // than in a later NewSessionTicket message; store it as soon as it is there
+    // so the next connection to this host can resume.
+    auto *ssl = qobject_cast<QSslSocket *>(m_socket);
+    if (ssl) {
+        const QByteArray ticket = ssl->sslConfiguration().sessionTicket();
+        if (!ticket.isEmpty())
+            tlsSessionCache().store(authorityFor(m_pending.url), ticket);
+    }
     sendRequestBytes();
 }
 
@@ -194,6 +255,20 @@ void HttpClient::onSslErrors(const QList<QSslError> &errors)
     for (const QSslError &error : errors)
         messages.append(error.errorString());
     fail(tr("TLS certificate verification failed: %1").arg(messages.join(QStringLiteral("; "))));
+}
+
+void HttpClient::onNewSessionTicket()
+{
+    // A TLS 1.3 server sends a fresh session ticket after the handshake (and may
+    // send more later). Each one is stored against the host it was issued for,
+    // so the next connection can resume. The ticket is also read after the
+    // handshake in onEncrypted() for servers that deliver it there instead.
+    auto *ssl = qobject_cast<QSslSocket *>(m_socket);
+    if (!ssl)
+        return;
+    const QByteArray ticket = ssl->sslConfiguration().sessionTicket();
+    if (!ticket.isEmpty())
+        tlsSessionCache().store(authorityFor(m_pending.url), ticket);
 }
 
 void HttpClient::onSocketError()

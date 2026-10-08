@@ -1,24 +1,21 @@
 # OpenQBrowser
 
-> An open-source web browser built from scratch, focused on simplicity, privacy,
-> performance, and learning how browsers work under the hood.
+> An open-source web browser focused on simplicity and privacy.
 
-**OpenQBrowser** is an experimental browser project built from the ground up. It
-fetches pages, parses HTML, applies CSS, lays out the result and paints it, using
-its own implementation of every stage rather than an existing engine. The goal is
-to make the browser pipeline readable end to end: you can follow a URL from the
-address bar to the pixels on screen by reading the source in order.
+**OpenQBrowser** renders pages with **Qt WebEngine (Chromium)**, so it shows
+modern sites the way Chrome does and plays HTML5 video and audio. The window,
+tabs, address bar, bookmarks, history and built-in `about:` pages are
+OpenQBrowser's own code on top of it.
 
-It is built for developers, researchers, students, and anyone who wants to see
-how a browser works rather than only use one.
+The project also contains its original from-scratch pipeline — an HTML parser, a
+CSS cascade, a layout engine, a painter and an embedded QuickJS JavaScript
+engine — under [`src/`](./src). That code no longer draws the window; it lives
+on as a library that the unit and integration test suites exercise, and it is
+the reference for anyone who wants to read a browser pipeline end to end.
 
 ```
-URL → DNS → TCP/TLS → HTTP → HTML parse → DOM → CSS cascade → box tree
-    → layout → paint → screen
+URL → Chromium (network, HTML, CSS, layout, paint, JS, media) → screen
 ```
-
-Every arrow in that chain is a directory under [`src/`](./src), and each stage
-depends only on the stages before it.
 
 ## Status
 
@@ -29,29 +26,24 @@ What works today:
 
 | Area | State |
 | --- | --- |
-| Networking | HTTP/1.1 and HTTPS, redirects, chunked bodies, gzip/deflate |
-| HTML | Tokenizer and tree construction, including implied elements |
-| DOM | Element, text and comment nodes with attributes and classes |
-| CSS | Tokenizer, selectors with specificity, the cascade, media queries |
-| Rendering | Block, inline, flex, float and grid layout, margin collapsing, box-sizing, painting, images |
-| Positioning | `relative`, `absolute`, `fixed` and `sticky`, with offsets and `z-index` |
-| JavaScript | QuickJS embedded: the DOM bindings, events and timers; inline, external, `defer` and `async` scripts |
-| Browser | Tabs, back/forward history, bookmarks, built-in `about:` pages |
-| Cookies | A cookie jar: `Set-Cookie` parsing, host and path scoping, expiry, `Secure`, `HttpOnly`, `SameSite` |
-| Caching | Conditional caching: `Cache-Control`, `Expires` and `Last-Modified` freshness, and `ETag` revalidation, so a stale resource costs a round trip and no body |
-| DevTools | Console that evaluates in the page, element tree with computed style and applied rules, element picker, layout, resource and cookie views |
-| `fetch` | Promise-based `fetch` with `Response` and `Headers`: `text()`, `json()`, `arrayBuffer()`, `blob()`, GET/POST/HEAD, request headers and bodies, CORS, and the browser's own header safeguards |
-| Testing | Nineteen test suites, all passing |
+| Rendering | Chromium via Qt WebEngine: full HTML/CSS/JavaScript and HTML5 media |
+| Browser | Tabs, back/forward history, bookmarks, built-in `about:` pages, an address bar with search |
+| DevTools | The Chromium DevTools page, docked in the window (F12) |
+| Headless | `--dump-dom` and `--screenshot` drive the same engine the window uses |
+| Core library | HTTP, HTML, CSS, layout, QuickJS and storage primitives, covered by the unit and integration suites |
 
-What does not work yet, and what you will observe:
+## Status
 
-| Area | What happens |
-| --- | --- |
-| Modules | `<script type="module">` is skipped, so a page written as modules needs a bundler or a fallback. |
-| `XMLHttpRequest`, CORS preflight | `fetch` is implemented and `XMLHttpRequest` is absent, so a page takes its modern path. A request that would need an `OPTIONS` preflight is refused rather than negotiated. |
-| Forms | Rendered and styled, but nothing is submitted. |
-| Persistence | Cookies and cached responses work but are held in memory; nothing — cookies, cache, history or bookmarks — is stored between runs. |
-| Sandboxing | No process isolation or site isolation. |
+OpenQBrowser is **experimental software**. It is not safe for everyday browsing
+and it has no sandbox.
+
+The original from-scratch pipeline remains in the repository and is still
+built and tested: its HTTP client, HTML tokenizer and tree construction, DOM,
+CSS tokenizer/selectors/cascade, block/inline/flex/grid layout, painter,
+QuickJS bindings and cookie/cache stores are all exercised by the unit and
+integration suites under [`tests/`](./tests). It is no longer the rendering
+path, but it is the readable reference implementation the project was founded
+on.
 
 ## Building
 
@@ -59,13 +51,14 @@ What does not work yet, and what you will observe:
 
 * A C++20 compiler
 * CMake 3.21 or newer
-* Qt 6.5 or newer (Core, Gui, Widgets, Network, Test)
+* Qt 6.5 or newer (Core, Gui, Widgets, Network, Svg, WebEngineWidgets, Test)
 * zlib
 * A network connection on the **first** build, to fetch QuickJS
 
 QuickJS is downloaded and built by CMake, so it needs no install step. Pass
-`-DOPENQBROWSER_SCRIPTING=OFF` to build without it; the browser still renders and
-reports that scripts do not run.
+`-DOPENQBROWSER_SCRIPTING=OFF` to build the core library without it. On macOS,
+`brew install qt` provides Qt WebEngine with proprietary media codecs, so H.264
+and AAC video play out of the box.
 
 On macOS with Homebrew:
 
@@ -138,48 +131,50 @@ launches a build from somewhere other than `build/`.
 ### Making the app easier to launch (macOS)
 
 The bundle lives inside the build directory, which is convenient while working on
-the code. To keep a copy in Applications:
+the code. It only works there because the Qt frameworks it loads are found in the
+Homebrew Qt installation. To produce a self-contained bundle that runs on a
+machine without Qt installed, deploy it first:
 
 ```bash
+./scripts/deploy.sh              # bundle Qt, QtWebEngineProcess and its resources
+./scripts/deploy.sh --dmg        # also build a distributable disk image
+
 cp -R build/bin/openqbrowser.app /Applications/
 open -a OpenQBrowser
 ```
+
+`deploy.sh` runs `macdeployqt`, then fixes two things it leaves behind: the
+QtWebEngineProcess helper's references to the Homebrew frameworks, and the
+frameworks' own `@executable_path` references (which are only correct for the
+main executable). The result passes `codesign --verify --deep --strict` and
+launches the Chromium renderer from inside the bundle.
 
 To open links in it from other applications, drag the bundle onto the Dock, or add
 it under System Settings → Desktop & Dock → Default web browser.
 
 ### Headless use
 
-The same pipeline runs without a window, which is what makes the browser
-testable and scriptable. These modes are how the tests and the examples in this
-repository are checked.
+The same engine runs without a window, which is what makes the browser
+testable and scriptable.
 
 ```bash
-# Dump the parsed document tree
+# Dump the rendered document (after JavaScript has run)
 ./build/bin/openqbrowser --dump-dom https://example.com/
-
-# Dump the box tree with geometry
-./build/bin/openqbrowser --dump-layout https://example.com/
-
-# Dump the computed style of every element
-./build/bin/openqbrowser --dump-styles https://example.com/
-
-# Everything at once, which is the same report the DevTools panel shows
-./build/bin/openqbrowser --dump-all https://example.com/
 
 # Render to a PNG
 ./build/bin/openqbrowser --screenshot=page.png --width=1200 https://example.com/
 ```
 
 On a machine with no display, select the offscreen platform plugin. `run.sh`
-does this on its own for the report flags, so the prefix is only needed when
+does this on its own for `--dump-dom`, so the prefix is only needed when
 calling the binary directly:
 
 ```bash
-QT_QPA_PLATFORM=offscreen ./build/bin/openqbrowser --screenshot=page.png about:home
+QT_QPA_PLATFORM=offscreen ./build/bin/openqbrowser --dump-dom https://example.com/
 ```
 
-### On macOS
+A screenshot renders through the compositor, so it needs a real platform and
+cannot be taken over SSH.
 
 Two toolchains are installed — Xcode's and the Command Line Tools — and their
 linkers are different generations. If the link fails with a wall of
@@ -266,7 +261,7 @@ OpenQBrowser/
 │   └── browser/     The window, tabs and navigation
 ├── examples/        Pages that exercise the engine
 ├── architecture/    Design documents for every subsystem
-├── scripts/         build.sh and run.sh
+├── scripts/         build.sh, run.sh and deploy.sh
 ├── assets/          Icons and other static files
 ├── CMakeLists.txt
 └── LICENSE
@@ -280,7 +275,7 @@ of it.
 
 ## Testing
 
-Nineteen suites, run by `ctest`. Each suite is also a standalone executable in
+Seventeen suites, run by `ctest`. Each suite is also a standalone executable in
 `build/bin`, so a single file can be run on its own.
 
 | Suite | Covers |

@@ -351,6 +351,10 @@ void StyleEngine::computeStyles(dom::Document *document)
     if (!root)
         return;
 
+    // The rule index is built once per pass, so the per-element loop below does
+    // not re-filter media queries and re-sort every rule for every element.
+    buildRuleIndex();
+
     // Iterative walk with an explicit stack keeps deep documents from
     // exhausting the call stack, which hostile pages would otherwise do.
     struct Frame
@@ -378,6 +382,50 @@ void StyleEngine::computeStyles(dom::Document *document)
     }
 }
 
+void StyleEngine::buildRuleIndex()
+{
+    m_effectiveRules.clear();
+    m_ruleIndex.clear();
+    m_universalRules.clear();
+
+    // Flatten every rule that applies at this viewport once. The cascade order
+    // is carried on the rule itself, so the list needs no sorting: candidates
+    // are ranked by importance, origin, specificity and source order later.
+    m_effectiveRules.reserve(m_sheets.size() > 0 ? 1024 : 0);
+    for (const Stylesheet &sheet : m_sheets) {
+        const QList<StyleRule> rules
+            = sheet.rulesForMedia(QStringLiteral("screen"), m_context.viewportWidth);
+        for (const StyleRule &rule : rules)
+            m_effectiveRules.append(rule);
+    }
+
+    quint32 sourceIndex = 0;
+    for (const StyleRule &rule : m_effectiveRules) {
+        for (const Selector &selector : rule.selectors) {
+            if (selector.steps.isEmpty())
+                continue;
+
+            // The key is the right-most compound's most selective simple
+            // selector. A rule is bucketed by id when there is one, otherwise by
+            // class, otherwise by type; selectors with none of those are tested
+            // against every element.
+            const CompoundSelector &subject = selector.steps.first().compound;
+            QString key;
+            if (!subject.ids.isEmpty())
+                key = u'#' + subject.ids.first();
+            else if (!subject.classes.isEmpty())
+                key = u'.' + subject.classes.first();
+            else if (!subject.type.isEmpty())
+                key = u't' + subject.type;
+
+            if (key.isEmpty())
+                m_universalRules.append({&rule, &selector, sourceIndex++});
+            else
+                m_ruleIndex[key].append({&rule, &selector, sourceIndex++});
+        }
+    }
+}
+
 ComputedStyle StyleEngine::computeFor(const dom::Element *element, const ComputedStyle *parentStyle)
 {
     ComputedStyle style;
@@ -393,23 +441,43 @@ ComputedStyle StyleEngine::computeFor(const dom::Element *element, const Compute
     const double inheritedFontSize = style.fontSize;
 
     // 2. Collect every matching declaration with its cascade rank.
+    //
+    // Rather than testing every rule against every element, only the buckets
+    // that could match are visited: the element's id, its classes, its tag, and
+    // the always-tested bucket for selectors with no such key.
     QList<Candidate> candidates;
-
-    for (const Stylesheet &sheet : m_sheets) {
-        const QList<StyleRule> rules
-            = sheet.rulesForMedia(QStringLiteral("screen"), m_context.viewportWidth);
-        for (const StyleRule &rule : rules) {
-            for (const Selector &selector : rule.selectors) {
-                if (!selector.matches(element))
-                    continue;
-                for (const Declaration &declaration : rule.declarations) {
-                    candidates.append({&declaration, selector.specificity(),
-                                       rule.origin < 0 ? 0 : 1, rule.order, selector.source,
-                                       false});
-                }
-            }
+    const auto considerRule = [&](const IndexedRule &indexed) {
+        if (!indexed.selector->matches(element))
+            return;
+        for (const Declaration &declaration : indexed.rule->declarations) {
+            candidates.append({&declaration, indexed.selector->specificity(),
+                               indexed.rule->origin < 0 ? 0 : 1, indexed.rule->order,
+                               indexed.sourceIndex, indexed.selector->source, false});
         }
+    };
+
+    for (const IndexedRule &indexed : m_universalRules)
+        considerRule(indexed);
+
+    const QString id = element->id();
+    if (!id.isEmpty()) {
+        const auto it = m_ruleIndex.constFind(u'#' + id);
+        if (it != m_ruleIndex.constEnd())
+            for (const IndexedRule &indexed : it.value())
+                considerRule(indexed);
     }
+
+    for (const QString &className : element->classList()) {
+        const auto it = m_ruleIndex.constFind(u'.' + className);
+        if (it != m_ruleIndex.constEnd())
+            for (const IndexedRule &indexed : it.value())
+                considerRule(indexed);
+    }
+
+    const auto typeIt = m_ruleIndex.constFind(u't' + element->tagName().toLower());
+    if (typeIt != m_ruleIndex.constEnd())
+        for (const IndexedRule &indexed : typeIt.value())
+            considerRule(indexed);
 
     // 3. Presentational hints sit between the user agent sheet and author
     //    styles, which is where HTML says they belong.
@@ -422,7 +490,7 @@ ComputedStyle StyleEngine::computeFor(const dom::Element *element, const Compute
         for (const Declaration &declaration : inlineDeclarations) {
             // An inline declaration has no selector, so it carries no
             // specificity; its rank is what makes it win over author rules.
-            candidates.append({&declaration, 0, 2, 1'000'000, QStringLiteral("style"), true});
+            candidates.append({&declaration, 0, 2, 1'000'000, 0, QStringLiteral("style"), true});
         }
     }
 
@@ -437,7 +505,9 @@ ComputedStyle StyleEngine::computeFor(const dom::Element *element, const Compute
                              return a.originRank < b.originRank;
                          if (a.specificity != b.specificity)
                              return a.specificity < b.specificity;
-                         return a.order < b.order;
+                         if (a.order != b.order)
+                             return a.order < b.order;
+                         return a.sourceIndex < b.sourceIndex;
                      });
 
     QList<AppliedDeclaration> applied;

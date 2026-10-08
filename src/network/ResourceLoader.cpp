@@ -238,8 +238,13 @@ void ResourceLoader::cancelAll()
 
     m_scriptQueue.clear();
     m_queue.clear();
-    for (HttpClient *client : clients.keys())
+    for (HttpClient *client : clients.keys()) {
         client->abort();
+        // The client is no longer in either map, so nothing will delete it. If
+        // it is left alive it leaks for the lifetime of the loader, one object
+        // per aborted request; deleteLater() reclaims it on the next loop turn.
+        client->deleteLater();
+    }
 }
 
 void ResourceLoader::fetch(const Url &url, const QString &referrer)
@@ -339,6 +344,10 @@ void ResourceLoader::connectClient(HttpClient *client)
         // own signal, so the check comes first: a page's handler must never see
         // a fetch() response.
         if (const ScriptMeta meta = m_scriptClients.take(client); meta.requestId != 0) {
+            // A script client lives in both maps; removing it only from the
+            // script map would leave a pointer to a deleted object in m_clients,
+            // and the next cancelAll() would abort freed memory.
+            m_clients.remove(client);
             client->deleteLater();
             handleScriptResponse(meta, response);
             pump();
@@ -354,6 +363,7 @@ void ResourceLoader::connectClient(HttpClient *client)
 
     connect(client, &HttpClient::failed, this, [this, client](const QString &error) {
         if (const ScriptMeta meta = m_scriptClients.take(client); meta.requestId != 0) {
+            m_clients.remove(client);
             client->deleteLater();
             failScriptRequest(meta, error);
             pump();

@@ -4,8 +4,8 @@
 #include <QString>
 
 #include "browser/PageSettings.h"
+#include "network/Url.h"
 #include "storage/Bookmarks.h"
-#include "storage/Cookies.h"
 #include "storage/History.h"
 
 class QAction;
@@ -15,22 +15,21 @@ class QLineEdit;
 class QProgressBar;
 class QTabWidget;
 class QToolBar;
+class QWebEnginePage;
+class QWebEngineProfile;
+class QWebEngineView;
 
-namespace oqb::browser {
-class Tab;
-}
 namespace oqb::ui {
-class DevToolsPanel;
-class PageView;
+class WebTab;
 }
 
 namespace oqb::ui {
 
 /// The browser window: tabs, an address bar, and the navigation controls.
 ///
-/// The window owns the shared history and bookmarks and hands them to each tab,
-/// so that back and forward are consistent across tabs and the history page
-/// shows everything the user has done.
+/// Each tab is a WebTab backed by Qt WebEngine (Chromium). The window owns the
+/// shared history and bookmarks and hands them to each tab, so the built-in
+/// about: pages show everything the user has done.
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -55,26 +54,23 @@ private slots:
     void onReload();
     void onStop();
     void onToggleBookmark();
-    void onShowBoxModel(bool show);
     void onToggleDevTools(bool show);
+    void onNewViewRequested(QWebEngineView *view);
     void updateNavigationState();
     void updateTitle();
 
 private:
-    /// Creates a tab, wires its signals and returns it.
-    browser::Tab *addTab();
-    browser::Tab *currentTab() const;
-    PageView *currentView() const;
+    /// Creates a tab with its own view and wires its signals.
+    WebTab *addTab();
+    WebTab *currentTab() const;
     /// Applies the shared stores and the tab count to every tab.
     void syncTabs();
 
     browser::PageSettings m_settings;
     storage::HistoryStore m_history;
     storage::BookmarkStore m_bookmarks;
-    /// One jar for the whole window, so a login in one tab is sent by every tab
-    /// and survives a navigation.
-    storage::CookieJar m_cookies;
 
+    QWebEngineProfile *m_profile = nullptr;
     QTabWidget *m_tabs = nullptr;
     QLineEdit *m_addressBar = nullptr;
     QLabel *m_statusLabel = nullptr;
@@ -85,11 +81,10 @@ private:
     QAction *m_reloadAction = nullptr;
     QAction *m_stopAction = nullptr;
     QAction *m_bookmarkAction = nullptr;
-    QAction *m_boxModelAction = nullptr;
     QAction *m_devToolsAction = nullptr;
 
     QDockWidget *m_devToolsDock = nullptr;
-    DevToolsPanel *m_devTools = nullptr;
+    QWebEngineView *m_devToolsView = nullptr;
 };
 
 } // namespace oqb::ui

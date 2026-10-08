@@ -37,7 +37,12 @@ struct PageSettings
     int requestTimeoutMs = 30000;
 
     /// The greatest number of subresources fetched at the same time.
-    int maxConcurrentRequests = 6;
+    ///
+    /// Chrome runs six HTTP/1.1 connections per host, but it also multiplexes
+    /// HTTP/2 and reuses connections, so those six carry far more than one
+    /// request at a time. OpenQBrowser opens a fresh connection per request, so
+    /// a stricter per-host figure would leave most of the round-trip time idle.
+    int maxConcurrentRequests = 12;
 
     /// Load images referenced by the page. Turning this off makes a slow page
     /// usable on a slow connection, and keeps the tests independent of images.

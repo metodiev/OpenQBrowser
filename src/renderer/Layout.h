@@ -296,9 +296,10 @@ private:
 
     /// The metrics for `text` in `font`, shaped once.
     ///
-    /// A returned reference is stable only until the next call, which is all any
-    /// caller here needs: every one of them reads the fields immediately.
-    const TextMetric &measure(const QFont &font, const QString &text) const;
+    /// Returns the measurement by value, not by reference into the cache: the
+    /// cache can rehash on the next measure() call, which would leave a
+    /// reference dangling. A TextMetric is four doubles, so the copy is free.
+    TextMetric measure(const QFont &font, const QString &text) const;
 
     /// The advance width of a single character in `font`, cached separately
     /// because the space width is asked for on every wrapped line.

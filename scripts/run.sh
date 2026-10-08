@@ -23,11 +23,7 @@ Usage: scripts/run.sh [options] [url]
 Starts OpenQBrowser. Any option this script does not recognise is passed
 straight through to the browser, so all of its own flags work:
 
-  --dump-dom[=FILE]     Write the document tree instead of opening a window
-  --dump-layout[=FILE]  Write the box tree
-  --dump-styles[=FILE]  Write computed styles
-  --dump-boxes[=FILE]   Write box geometry
-  --dump-all            Write every report
+  --dump-dom[=FILE]     Write the document instead of opening a window
   --screenshot=FILE     Render the page to a PNG
   --width N --height N  Viewport size for the headless modes
   --no-images           Skip image loading
@@ -87,21 +83,15 @@ if [ "${needs_build}" = "1" ]; then
 fi
 
 # ------------------------------------------------------------------- headless
-# A report option means the caller does not want a window. QT_QPA_PLATFORM
-# "offscreen" keeps Qt from needing a display, and the width/height flags keep
-# the layout deterministic, which is what makes the output comparable between
-# runs.
-headless=0
+# A dump needs no window and no display: the offscreen platform keeps it working
+# over SSH. A screenshot, by contrast, renders through the compositor and needs
+# a real platform, so only the dump mode is forced offscreen here.
 for arg in "${browser_args[@]}"; do
     case "${arg}" in
-        --dump-dom*|--dump-layout*|--dump-styles*|--dump-boxes*|--dump-all*|--screenshot*)
-            headless=1 ;;
+        --dump-dom*)
+            exec env QT_QPA_PLATFORM=offscreen "${binary}" "${browser_args[@]}" ;;
     esac
 done
-
-if [ "${headless}" = "1" ]; then
-    exec env QT_QPA_PLATFORM=offscreen "${binary}" "${browser_args[@]}"
-fi
 
 # -------------------------------------------------------------------- windowed
 # Qt warns loudly if these are set, and the window would never appear.

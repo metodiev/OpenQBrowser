@@ -149,6 +149,7 @@ private slots:
     void refusesASecurePageDowngrade();
     void seesOnlyTheHeadersItIsGranted();
     void completesWithoutAPageAttached();
+    void cancelAllAfterScriptFetchCompletesIsSafe();
 
 private:
     /// Runs `fetch` against `server` and waits for `signalIsTrue` to hold.
@@ -368,6 +369,36 @@ void FetchFlowTest::completesWithoutAPageAttached()
     request.documentUrl = m_server->urlFor(QStringLiteral("/page")).toString();
 
     QVERIFY(m_loader->startScriptFetch(request) != 0);
+    QVERIFY(waitFor([&] { return !m_responses.isEmpty(); }));
+    QCOMPARE(m_responses.first().status, 200);
+}
+
+void FetchFlowTest::cancelAllAfterScriptFetchCompletesIsSafe()
+{
+    // A script request lives in both the script map and the shared client map.
+    // When it completed, the client was scheduled for deletion. If it was left
+    // in the shared map, the next navigation's cancelAll() would abort memory
+    // that had already been freed - the crash a link click used to trigger.
+    ScriptFetchRequest request;
+    request.url = m_server->urlFor(QStringLiteral("/data.json")).toString();
+    request.documentUrl = m_server->urlFor(QStringLiteral("/page")).toString();
+
+    QVERIFY(m_loader->startScriptFetch(request) != 0);
+    QVERIFY(waitFor([&] { return !m_responses.isEmpty(); }));
+
+    // Actually run the deferred deletion, so any lingering reference to the
+    // completed request's client is now dangling.
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+    // This is what Page::load() calls when a navigation interrupts a load.
+    // It must be a no-op for requests that already finished, not a crash.
+    m_loader->cancelAll();
+
+    // And a fresh request afterwards must still work: the loader was not left
+    // in a state where a stale entry blocks new work.
+    m_responses.clear();
+    const int second = m_loader->startScriptFetch(request);
+    QVERIFY(second != 0);
     QVERIFY(waitFor([&] { return !m_responses.isEmpty(); }));
     QCOMPARE(m_responses.first().status, 200);
 }

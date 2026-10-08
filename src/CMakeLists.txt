@@ -110,17 +110,20 @@ if(OPENQBROWSER_SCRIPTING)
     target_compile_definitions(oqb_core PUBLIC OPENQBROWSER_SCRIPTING=1)
 endif()
 
-# The windowed shell: Qt Widgets on top of the core. It is a separate library so
-# that the headless paths (dumps, screenshots, tests) never depend on a windowing
-# toolkit being present.
+# The windowed shell: Qt Widgets on top of the core.
+#
+# Pages are rendered by Qt WebEngine (Chromium), so the browser gets a
+# production-grade HTML/CSS/JavaScript engine and working <video>/<audio>. The
+# custom pipeline in oqb_core remains for the network/storage primitives the
+# window still uses (URLs, history, bookmarks, built-in about: pages) and for the
+# unit and integration test suites.
 add_library(oqb_ui STATIC
-    ui/PageView.cpp
+    ui/WebTab.cpp
     ui/MainWindow.cpp
-    ui/DevToolsPanel.cpp
 )
 
 target_link_libraries(oqb_ui
-    PUBLIC oqb_core Qt6::Widgets
+    PUBLIC oqb_core Qt6::Widgets Qt6::WebEngineWidgets
     PRIVATE oqb_project_options
 )
 

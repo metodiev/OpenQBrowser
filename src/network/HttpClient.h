@@ -93,6 +93,7 @@ private slots:
     void onDisconnected();
     void onSocketError();
     void onSslErrors(const QList<QSslError> &errors);
+    void onNewSessionTicket();
     void onTimeout();
 
 private:

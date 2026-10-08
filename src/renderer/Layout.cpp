@@ -104,7 +104,7 @@ Box *LayoutResult::hitTest(double x, double y) const
     return best;
 }
 
-const LayoutEngine::TextMetric &LayoutEngine::measure(const QFont &font, const QString &text) const
+LayoutEngine::TextMetric LayoutEngine::measure(const QFont &font, const QString &text) const
 {
     // The key carries everything that changes the shaping result. It is built as
     // one string rather than a nested map so that a lookup is a single hash: the
@@ -1269,7 +1269,7 @@ double LayoutEngine::layoutInlineRun(Box *container, const Context &context,
                   // Measured once for the whole text box: the ascent and the
                   // height are the font's, and the string only matters for the
                   // cached case, so one entry serves every word in it.
-                  const TextMetric &metrics = measure(font, box->text());
+                  const TextMetric metrics = measure(font, box->text());
                   const double lineHeight
                       = style->lineHeight > 0 ? style->lineHeight : metrics.lineHeight;
 

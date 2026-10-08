@@ -36,7 +36,7 @@ option(OPENQBROWSER_SCRIPTING "Run page JavaScript with the embedded QuickJS eng
 set(OPENQBROWSER_QUICKJS_TAG "v0.9.0" CACHE STRING
     "The quickjs-ng release to build against")
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Network Svg)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Network Svg WebEngineWidgets)
 find_package(ZLIB REQUIRED)
 
 qt_standard_project_setup()

@@ -147,4 +147,5 @@ cat <<EOF
 ${OQB_BOLD}Next:${OQB_RESET}  ./scripts/run.sh              open the browser window
        ./scripts/run.sh https://bbc.com   open a page
        ./scripts/run.sh --dump-dom https://example.com   render headlessly
+       ./scripts/deploy.sh             bundle Qt for a distributable .app (macOS)
 EOF

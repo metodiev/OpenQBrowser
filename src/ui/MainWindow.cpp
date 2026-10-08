@@ -1,10 +1,11 @@
 #include "ui/MainWindow.h"
 
-#include "browser/Tab.h"
-#include "ui/PageView.h"
+#include "ui/WebTab.h"
 
 #include <QAction>
 #include <QApplication>
+#include <QDockWidget>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -12,13 +13,11 @@
 #include <QProgressBar>
 #include <QShortcut>
 #include <QStatusBar>
-#include <QDockWidget>
 #include <QTabWidget>
 #include <QToolBar>
-
-#include "ui/DevToolsPanel.h"
-#include <QVBoxLayout>
-#include <QIcon>
+#include <QWebEngineHistory>
+#include <QWebEngineProfile>
+#include <QWebEngineView>
 
 namespace oqb::ui {
 
@@ -32,6 +31,13 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
     setWindowIcon(QIcon(QStringLiteral(":/assets/icon.svg")));
     resize(static_cast<int>(settings.viewportWidth + 20),
            static_cast<int>(settings.viewportHeight + 120));
+
+    // Every tab shares one profile, so cookies, cache and local storage are
+    // common to the window and survive restarts. The default profile is
+    // persistent and owned by Qt.
+    m_profile = QWebEngineProfile::defaultProfile();
+    if (!settings.userAgent.isEmpty())
+        m_profile->setHttpUserAgent(settings.userAgent);
 
     // ------------------------------------------------------------- toolbar
     auto *toolbar = addToolBar(QStringLiteral("Navigation"));
@@ -64,11 +70,6 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
     m_bookmarkAction->setToolTip(QStringLiteral("Bookmark this page"));
     connect(m_bookmarkAction, &QAction::triggered, this, &MainWindow::onToggleBookmark);
 
-    m_boxModelAction = toolbar->addAction(QStringLiteral("Boxes"));
-    m_boxModelAction->setToolTip(QStringLiteral("Show the box model overlay"));
-    m_boxModelAction->setCheckable(true);
-    connect(m_boxModelAction, &QAction::toggled, this, &MainWindow::onShowBoxModel);
-
     m_devToolsAction = toolbar->addAction(QStringLiteral("DevTools"));
     m_devToolsAction->setToolTip(QStringLiteral("Show the developer tools (F12)"));
     m_devToolsAction->setCheckable(true);
@@ -77,19 +78,15 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
 
     // ------------------------------------------------------------- devtools
     //
-    // The panel lives in a dock so it can be resized, floated or hidden without
-    // disturbing the page, and it starts hidden because most browsing does not
-    // need it.
-    m_devTools = new DevToolsPanel(this);
+    // The inspector is the Chromium DevTools page, docked so it can be resized
+    // or floated like a real browser's. It starts hidden.
+    m_devToolsView = new QWebEngineView(this);
     m_devToolsDock = new QDockWidget(QStringLiteral("Developer Tools"), this);
     m_devToolsDock->setObjectName(QStringLiteral("devToolsDock"));
-    m_devToolsDock->setWidget(m_devTools);
+    m_devToolsDock->setWidget(m_devToolsView);
     m_devToolsDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::RightDockWidgetArea);
     addDockWidget(Qt::BottomDockWidgetArea, m_devToolsDock);
     m_devToolsDock->hide();
-
-    connect(m_devTools, &DevToolsPanel::statusMessage, this,
-            [this](const QString &message) { m_statusLabel->setText(message); });
 
     // Closing the dock with its own close box unchecks the toolbar button, so the
     // two ways of controlling it cannot disagree.
@@ -113,8 +110,6 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
     viewMenu->addAction(m_reloadAction);
     viewMenu->addSeparator();
     viewMenu->addAction(m_devToolsAction);
-    viewMenu->addAction(QStringLiteral("Box model overlay"), this,
-                        [this] { m_boxModelAction->toggle(); });
 
     QMenu *pagesMenu = menuBar()->addMenu(QStringLiteral("&Pages"));
     pagesMenu->addAction(QStringLiteral("New Tab Page"), this,
@@ -132,7 +127,7 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
 
     m_progress = new QProgressBar;
     m_progress->setMaximumWidth(140);
-    m_progress->setRange(0, 0); // busy indicator
+    m_progress->setRange(0, 100);
     m_progress->setVisible(false);
     statusBar()->addPermanentWidget(m_progress);
 
@@ -172,92 +167,60 @@ int MainWindow::tabCount() const
     return m_tabs ? m_tabs->count() : 0;
 }
 
-browser::Tab *MainWindow::addTab()
+WebTab *MainWindow::addTab()
 {
-    const int index = m_tabs->count();
-
-    auto *tab = new browser::Tab(m_settings, this);
+    auto *tab = new WebTab(m_profile, this);
     tab->setHistory(&m_history);
     tab->setBookmarks(&m_bookmarks);
-    tab->setCookieJar(&m_cookies);
-    tab->setTabCount(index + 1);
+    tab->setSearchTemplate(m_settings.searchTemplate);
 
-    auto *view = new PageView;
-    view->setTab(tab);
-
-    connect(tab, &browser::Tab::titleChanged, this, [this, tab](const QString &title) {
+    connect(tab, &WebTab::titleChanged, this, [this, tab](const QString &title) {
         updateTitle();
         // Keep the tab's own label in step with its document title.
         for (int i = 0; i < m_tabs->count(); ++i) {
-            const auto *pageView = qobject_cast<PageView *>(m_tabs->widget(i));
-            if (pageView && pageView->tab() == tab)
+            if (qobject_cast<WebTab *>(m_tabs->widget(i)) == tab)
                 m_tabs->setTabText(i, title.left(24));
         }
     });
 
-    connect(tab, &browser::Tab::stateChanged, this, &MainWindow::updateNavigationState);
-    connect(tab, &browser::Tab::loadFinished, this, [this, tab] {
-        // Only the tab the panel is showing matters; another tab finishing must
-        // not disturb it.
-        if (m_devTools && currentTab() == tab)
-            m_devTools->refresh();
+    connect(tab, &WebTab::urlChanged, this, [this](const network::Url &) {
+        updateNavigationState();
     });
-    connect(tab, &browser::Tab::loadFailed, this, [this](const QString &message) {
-        m_statusLabel->setText(message);
+    connect(tab, &WebTab::loadStarted, this, [this] { updateNavigationState(); });
+    connect(tab, &WebTab::loadFinished, this, [this](bool) { updateNavigationState(); });
+    connect(tab, &WebTab::loadProgress, this, [this](int progress) {
+        if (qobject_cast<WebTab *>(m_tabs->currentWidget()) == currentTab()) {
+            m_progress->setValue(progress);
+            m_progress->setVisible(progress > 0 && progress < 100);
+        }
     });
-    connect(tab, &browser::Tab::navigationRequested, this,
-            [this](const network::Url &url, bool newTab) {
-                if (newTab)
-                    openInNewTab(url);
-                else
-                    openUrl(url);
-            });
-
-    connect(view, &PageView::linkActivated, this,
-            [this](const network::Url &url, bool newTab) {
-                if (newTab)
-                    openInNewTab(url);
-                else
-                    openUrl(url);
-            });
-    connect(view, &PageView::linkHovered, this, [this](const QString &url) {
+    connect(tab, &WebTab::linkHovered, this, [this](const QString &url) {
         m_statusLabel->setText(url);
     });
-    connect(view, &PageView::documentSizeChanged, this, [this] { updateNavigationState(); });
-    connect(view, &PageView::reloadRequested, this, &MainWindow::onReload);
+    connect(tab, &WebTab::newViewRequested, this, &MainWindow::onNewViewRequested);
 
-    m_tabs->addTab(view, QStringLiteral("New Tab"));
+    m_tabs->addTab(tab, QStringLiteral("New Tab"));
     syncTabs();
     return tab;
 }
 
-browser::Tab *MainWindow::currentTab() const
+WebTab *MainWindow::currentTab() const
 {
-    PageView *view = currentView();
-    return view ? view->tab() : nullptr;
-}
-
-PageView *MainWindow::currentView() const
-{
-    return qobject_cast<PageView *>(m_tabs->currentWidget());
+    return qobject_cast<WebTab *>(m_tabs->currentWidget());
 }
 
 void MainWindow::syncTabs()
 {
-    // The tab count appears on the new tab page, so every tab is told when it
-    // changes.
     const int count = m_tabs->count();
     for (int i = 0; i < count; ++i) {
-        if (auto *view = qobject_cast<PageView *>(m_tabs->widget(i))) {
-            if (view->tab())
-                view->tab()->setTabCount(count);
-        }
+        if (auto *tab = qobject_cast<WebTab *>(m_tabs->widget(i)))
+            tab->setTabCount(count);
     }
 }
 
 void MainWindow::openUrl(const network::Url &url)
 {
-    browser::Tab *tab = currentTab();
+    WebTab *tab = currentTab();
     if (!tab) {
         tab = addTab();
         if (!tab)
@@ -268,7 +231,7 @@ void MainWindow::openUrl(const network::Url &url)
 
 void MainWindow::openInNewTab(const network::Url &url)
 {
-    browser::Tab *tab = addTab();
+    WebTab *tab = addTab();
     if (!tab)
         return;
     m_tabs->setCurrentIndex(m_tabs->count() - 1);
@@ -277,18 +240,46 @@ void MainWindow::openInNewTab(const network::Url &url)
 
 void MainWindow::onToggleDevTools(bool show)
 {
-    if (!m_devToolsDock)
+    if (!m_devToolsDock || !m_devToolsView)
         return;
 
     m_devToolsDock->setVisible(show);
 
-    // Showing the panel refreshes it, because the page may have changed while it
-    // was hidden and a stale view is worse than none.
-    if (show && m_devTools) {
-        m_devTools->setTab(currentTab());
-        m_devTools->setPageView(currentView());
-        m_devTools->refresh();
+    if (show) {
+        if (WebTab *tab = currentTab())
+            tab->attachDevTools(m_devToolsView->page());
+    } else if (WebTab *tab = currentTab()) {
+        tab->detachDevTools();
     }
+}
+
+void MainWindow::onNewViewRequested(QWebEngineView *view)
+{
+    // A target=_blank link or window.open() arrives here: the page asked for a
+    // new view, which becomes a new tab rather than a separate window.
+    auto *tab = new WebTab(view, m_profile, this);
+    tab->setHistory(&m_history);
+    tab->setBookmarks(&m_bookmarks);
+    tab->setSearchTemplate(m_settings.searchTemplate);
+
+    connect(tab, &WebTab::titleChanged, this, [this, tab](const QString &title) {
+        updateTitle();
+        for (int i = 0; i < m_tabs->count(); ++i) {
+            if (qobject_cast<WebTab *>(m_tabs->widget(i)) == tab)
+                m_tabs->setTabText(i, title.left(24));
+        }
+    });
+    connect(tab, &WebTab::urlChanged, this, [this](const network::Url &) { updateNavigationState(); });
+    connect(tab, &WebTab::loadStarted, this, [this] { updateNavigationState(); });
+    connect(tab, &WebTab::loadFinished, this, [this](bool) { updateNavigationState(); });
+    connect(tab, &WebTab::linkHovered, this, [this](const QString &url) {
+        m_statusLabel->setText(url);
+    });
+    connect(tab, &WebTab::newViewRequested, this, &MainWindow::onNewViewRequested);
+
+    m_tabs->addTab(tab, QStringLiteral("New Tab"));
+    m_tabs->setCurrentIndex(m_tabs->count() - 1);
+    syncTabs();
 }
 
 void MainWindow::onTabChanged(int index)
@@ -298,15 +289,11 @@ void MainWindow::onTabChanged(int index)
     updateTitle();
     updateNavigationState();
 
-    PageView *view = currentView();
-    if (view)
-        view->refresh();
-
-    // The panel follows the tab, so switching tabs shows the new page's state
-    // rather than the previous one's.
-    if (m_devTools) {
-        m_devTools->setTab(currentTab());
-        m_devTools->setPageView(view);
+    // The inspector follows the tab, so switching tabs shows the new page's
+    // state rather than the previous one's.
+    if (m_devToolsDock && m_devToolsDock->isVisible()) {
+        if (WebTab *tab = currentTab())
+            tab->attachDevTools(m_devToolsView->page());
     }
 }
 
@@ -331,7 +318,7 @@ void MainWindow::onTabClosed(int index)
 
 void MainWindow::onAddressEntered()
 {
-    browser::Tab *tab = currentTab();
+    WebTab *tab = currentTab();
     if (!tab) {
         openUrl(network::Url::fromUserInput(m_addressBar->text()));
         return;
@@ -341,31 +328,31 @@ void MainWindow::onAddressEntered()
 
 void MainWindow::onBack()
 {
-    if (browser::Tab *tab = currentTab())
-        tab->goBack();
+    if (WebTab *tab = currentTab())
+        tab->back();
 }
 
 void MainWindow::onForward()
 {
-    if (browser::Tab *tab = currentTab())
-        tab->goForward();
+    if (WebTab *tab = currentTab())
+        tab->forward();
 }
 
 void MainWindow::onReload()
 {
-    if (browser::Tab *tab = currentTab())
+    if (WebTab *tab = currentTab())
         tab->reload();
 }
 
 void MainWindow::onStop()
 {
-    if (browser::Tab *tab = currentTab())
+    if (WebTab *tab = currentTab())
         tab->stop();
 }
 
 void MainWindow::onToggleBookmark()
 {
-    browser::Tab *tab = currentTab();
+    WebTab *tab = currentTab();
     if (!tab)
         return;
 
@@ -374,15 +361,9 @@ void MainWindow::onToggleBookmark()
     m_statusLabel->setText(added ? QStringLiteral("Bookmarked") : QStringLiteral("Bookmark removed"));
 }
 
-void MainWindow::onShowBoxModel(bool show)
-{
-    if (PageView *view = currentView())
-        view->setShowBoxModel(show);
-}
-
 void MainWindow::updateNavigationState()
 {
-    browser::Tab *tab = currentTab();
+    WebTab *tab = currentTab();
 
     if (!tab) {
         m_backAction->setEnabled(false);
@@ -392,8 +373,8 @@ void MainWindow::updateNavigationState()
         return;
     }
 
-    m_backAction->setEnabled(tab->canGoBack());
-    m_forwardAction->setEnabled(tab->canGoForward());
+    m_backAction->setEnabled(tab->view()->history()->canGoBack());
+    m_forwardAction->setEnabled(tab->view()->history()->canGoForward());
     m_stopAction->setEnabled(tab->isLoading());
     m_reloadAction->setEnabled(!tab->isLoading());
 
@@ -419,7 +400,7 @@ void MainWindow::updateNavigationState()
 
 void MainWindow::updateTitle()
 {
-    browser::Tab *tab = currentTab();
+    WebTab *tab = currentTab();
     const QString title = tab ? tab->title() : QString();
 
     setWindowTitle(title.isEmpty() ? QStringLiteral("OpenQBrowser")
