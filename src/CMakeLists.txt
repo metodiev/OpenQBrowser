@@ -118,6 +118,8 @@ endif()
 # window still uses (URLs, history, bookmarks, built-in about: pages) and for the
 # unit and integration test suites.
 add_library(oqb_ui STATIC
+    ui/Theme.cpp
+    ui/TabBar.cpp
     ui/WebTab.cpp
     ui/MainWindow.cpp
 )

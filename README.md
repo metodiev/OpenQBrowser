@@ -27,7 +27,9 @@ What works today:
 | Area | State |
 | --- | --- |
 | Rendering | Chromium via Qt WebEngine: full HTML/CSS/JavaScript and HTML5 media |
-| Browser | Tabs, back/forward history, bookmarks, built-in `about:` pages, an address bar with search |
+| Browser | Tabs with favicons, back/forward history, bookmarks, built-in `about:` pages, an address bar with search |
+| Interface | A themed window that follows the desktop's light or dark appearance, with a tab strip, a flat toolbar and a loading line |
+| Tabs | Open with the **+** button, `Ctrl/⌘ + T`, a double click on empty tab-strip space, or a link that asks for a new window; close with the tab's **×** or a middle click |
 | DevTools | The Chromium DevTools page, docked in the window (F12) |
 | Headless | `--dump-dom` and `--screenshot` drive the same engine the window uses |
 | Core library | HTTP, HTML, CSS, layout, QuickJS and storage primitives, covered by the unit and integration suites |
@@ -243,23 +245,27 @@ wrong, the bug is in the renderer.
 ```
 OpenQBrowser/
 ├── src/
+│   ├── ui/          Window, tab strip, theme and the WebEngine-backed tabs
+│   │   ├── Theme      Colours, stylesheet and the painted icons
+│   │   ├── TabBar     The tab strip: pills, close buttons, new-tab gestures
+│   │   ├── WebTab     One tab: a Chromium view plus address and history glue
+│   │   └── MainWindow The chrome: tab strip, toolbar, address bar, DevTools
+│   ├── browser/     Built-in about: pages (rendered by Chromium)
 │   ├── network/     URLs, HTTP/1.1, HTTPS, redirects, resource loading
 │   ├── dom/         Document Object Model
 │   ├── html/        HTML tokenizer, tree construction, entities
 │   ├── css/         CSS tokenizer, selectors, cascade, media queries
 │   ├── renderer/    Box tree, layout, painting
-│   ├── browser/     Page and Tab orchestration, built-in pages
 │   ├── javascript/  QuickJS engine, DOM bindings, events, timers
 │   ├── storage/     History and bookmarks
 │   ├── security/    Origin, transport and permission policy
-│   ├── devtools/    The inspector
-│   ├── ui/          Qt Widgets shell: window, tabs, address bar
+│   ├── devtools/    The from-scratch inspector (core library)
 │   └── main.cpp     Command line interface
 ├── tests/
 │   ├── unit/        URL, HTML, CSS, layout and JavaScript
 │   ├── integration/ HTTP, the full pipeline and scripted pages
-│   └── browser/     The window, tabs and navigation
-├── examples/        Pages that exercise the engine
+│   └── ui/          The window: tabs, icons and the chrome
+├── examples/        Pages that exercise the from-scratch engine
 ├── architecture/    Design documents for every subsystem
 ├── scripts/         build.sh, run.sh and deploy.sh
 ├── assets/          Icons and other static files
@@ -267,15 +273,18 @@ OpenQBrowser/
 └── LICENSE
 ```
 
-`src/network` through `src/browser` form a static library, `oqb_core`, with no
-dependency on any windowing toolkit. That is what lets a page be fetched, parsed,
-styled and laid out headlessly, and it is why the command line dumps and the
-tests produce the same result as the window. `src/ui` is a second library on top
-of it.
+The window is `src/ui`: a themed tab strip, a toolbar with the address bar, and
+one `WebTab` per tab. Each tab is a Qt WebEngine view, so pages render and play
+media the way Chrome does. `src/browser` contributes the built-in `about:` pages,
+which are ordinary HTML documents styled to match the chrome.
+
+`src/network` through `src/browser` also form a static library, `oqb_core`, that
+the window no longer draws with: it is the from-scratch pipeline, kept compiled
+and covered by the unit and integration suites.
 
 ## Testing
 
-Seventeen suites, run by `ctest`. Each suite is also a standalone executable in
+Nineteen suites, run by `ctest`. Each suite is also a standalone executable in
 `build/bin`, so a single file can be run on its own.
 
 | Suite | Covers |
@@ -297,7 +306,15 @@ Seventeen suites, run by `ctest`. Each suite is also a standalone executable in
 | `tst_cache_flow` | Revalidation and conditional requests over HTTP |
 | `tst_fetch_flow` | A script calling `fetch()` through the page loader |
 | `tst_scripting` | Scripts running in the pipeline, in the right order |
-| `tst_browser` | The window, tabs, history, error pages |
+| `tst_tabs` | The window's tabs: opening, closing, switching, icons, shortcuts |
+| `tst_theme` | The palette, the stylesheet and every painted icon |
+
+`tst_tabs` also writes a screenshot of the window when `OQB_UI_PREVIEW` names a
+file, which is how the chrome is reviewed by eye:
+
+```bash
+OQB_UI_PREVIEW=/tmp/browser.png ./build/bin/tst_tabs writePreview
+```
 | `tst_devtools` | The inspector panel and its reports |
 
 The tests are not decoration: they have found and fixed real bugs, including

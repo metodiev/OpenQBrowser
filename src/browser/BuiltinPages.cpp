@@ -20,82 +20,228 @@ QString escape(const QString &text)
     return out;
 }
 
-/// The styles every built-in page shares. Keeping them in one place means the
-/// pages look like a set, and it exercises the parts of CSS the renderer
-/// supports, which has already caught regressions.
+/// The styles every built-in page shares.
+///
+/// The pages are rendered by Chromium, so modern CSS is available: custom
+/// properties, flexbox, grid and calc are all used here rather than worked
+/// around. The palette follows the desktop's light or dark appearance through
+/// prefers-color-scheme, which is what keeps a built-in page looking like part
+/// of the browser rather than a document from another era.
 QString sharedStyles()
 {
     return QStringLiteral(R"(
-      :root { color-scheme: light dark }
-      body { font-family: -apple-system, "Helvetica Neue", sans-serif;
-             margin: 0; padding: 40px; background: #f8f9fa; color: #212529;
-             line-height: 24px; }
-      h1 { font-size: 32px; margin: 0 0 8px 0; color: #212529 }
-      h2 { font-size: 20px; margin: 28px 0 8px 0; color: #343a40 }
-      p { margin: 0 0 16px 0; max-width: 640px }
-      .subtitle { color: #6c757d; font-size: 15px }
-      a { color: #0b7285; text-decoration: none }
-      ul { margin: 0 0 16px 0; padding-left: 24px }
-      li { margin-bottom: 6px }
-      .card { background: white; border: 1px solid #dee2e6; padding: 16px;
-              margin-bottom: 12px; max-width: 640px }
-      .badge { display: inline-block; background: #0b7285; color: white;
-               padding: 2px 8px; font-size: 12px; margin-right: 6px }
-      .meta { color: #868e96; font-size: 13px }
-      table { border-collapse: collapse; max-width: 640px }
-      td, th { text-align: left; padding: 6px 12px 6px 0; vertical-align: top }
-      code { font-family: Menlo, monospace; background: #f1f3f5; padding: 1px 4px }
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --panel-hover: #f0f3f7;
+        --text: #1b212b;
+        --dim: #5f6772;
+        --faint: #8a929e;
+        --border: #e2e6ec;
+        --accent: #1d74d8;
+        --accent-soft: #e8f1fd;
+        --radius: 12px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16181d;
+          --panel: #1e2126;
+          --panel-hover: #262a31;
+          --text: #f2f5f9;
+          --dim: #9aa3af;
+          --faint: #7b838f;
+          --border: #30353d;
+          --accent: #5aa9ff;
+          --accent-soft: #1b2a3d;
+        }
+      }
+      * { box-sizing: border-box }
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 15px;
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+      }
+      .page {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 56px 28px 80px;
+      }
+      .page--centered { text-align: center }
+      h1 {
+        font-size: 30px;
+        line-height: 1.2;
+        margin: 0 0 10px;
+        letter-spacing: -0.02em;
+      }
+      h2 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--faint);
+        margin: 36px 0 12px;
+        font-weight: 600;
+      }
+      p { margin: 0 0 14px; color: var(--dim) }
+      a { color: var(--accent); text-decoration: none }
+      a:hover { text-decoration: underline }
+      .mark {
+        width: 56px; height: 56px;
+        border-radius: 16px;
+        background: var(--accent);
+        color: #fff;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 26px;
+        font-weight: 700;
+        margin-bottom: 18px;
+      }
+      .subtitle { font-size: 16px; color: var(--dim); margin-bottom: 28px }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px 18px;
+        display: block;
+        color: inherit;
+        transition: background 120ms ease, border-color 120ms ease;
+      }
+      a.card:hover {
+        background: var(--panel-hover);
+        border-color: var(--accent);
+        text-decoration: none;
+      }
+      .card .title { font-weight: 600; margin-bottom: 2px }
+      .card .desc { font-size: 13px; color: var(--faint) }
+      .list { display: grid; gap: 8px }
+      .list a.item, .item {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px 14px;
+        color: inherit;
+        display: block;
+      }
+      .list a.item:hover {
+        background: var(--panel-hover);
+        border-color: var(--accent);
+        text-decoration: none;
+      }
+      .item .host { font-size: 12px; color: var(--faint); margin-top: 2px }
+      .meta { font-size: 13px; color: var(--faint) }
+      .badge {
+        display: inline-block;
+        background: var(--accent-soft);
+        color: var(--accent);
+        border-radius: 999px;
+        padding: 3px 11px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .keys { display: grid; gap: 6px }
+      .keys .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 9px 14px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        font-size: 14px;
+      }
+      .keys .row span:last-child { color: var(--faint) }
+      kbd {
+        display: inline-block;
+        min-width: 22px;
+        text-align: center;
+        background: var(--panel-hover);
+        border: 1px solid var(--border);
+        border-bottom-width: 2px;
+        border-radius: 6px;
+        padding: 1px 7px;
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text);
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: var(--panel-hover);
+        border-radius: 5px;
+        padding: 2px 6px;
+        font-size: 13px;
+      }
+      .error .mark { background: #d9534f }
+      .error h1 { color: var(--text) }
     )");
 }
 
-QString pageShell(const QString &title, const QString &body)
+QString pageShell(const QString &title, const QString &body, const QString &extraClass = {})
 {
-    return QStringLiteral("<!DOCTYPE html><html><head><title>%1</title><style>%2</style>"
-                          "</head><body>%3</body></html>")
-        .arg(escape(title), sharedStyles(), body);
+    return QStringLiteral("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+                          "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                          "<title>%1</title><style>%2</style></head>"
+                          "<body><div class=\"page%4\">%3</div></body></html>")
+        .arg(escape(title), sharedStyles(), body, extraClass);
 }
 
 QString homePage(const QString &version, int tabCount)
 {
     QString body;
-    body += QStringLiteral("<h1>OpenQBrowser</h1>\n");
-    body += QStringLiteral("<p class=\"subtitle\">An open-source browser built from scratch. "
-                           "Version %1.</p>\n").arg(escape(version));
+    body += QStringLiteral("<div class=\"page--centered\">");
+    body += QStringLiteral("<div class=\"mark\">Q</div>");
+    body += QStringLiteral("<h1>OpenQBrowser</h1>");
+    body += QStringLiteral("<p class=\"subtitle\">Search the web, or type an address above. "
+                           "Pages are rendered by Chromium, so modern sites work.</p>");
+    body += QStringLiteral("</div>");
 
-    body += QStringLiteral("<h2>Search or enter an address</h2>\n");
-    body += QStringLiteral("<p>Type in the address bar above. OpenQBrowser treats something with "
-                           "a dot in it as a host name and anything else as a search.</p>\n");
+    body += QStringLiteral("<h2>Built-in pages</h2>\n<div class=\"grid\">\n");
+    const QHash<QString, QString> descriptions = {
+        {QStringLiteral("home"), QStringLiteral("This page")},
+        {QStringLiteral("about"), QStringLiteral("Every built-in page")},
+        {QStringLiteral("version"), QStringLiteral("Build and component details")},
+        {QStringLiteral("history"), QStringLiteral("Pages visited in this session")},
+        {QStringLiteral("bookmarks"), QStringLiteral("Pages you have saved")},
+        {QStringLiteral("blank"), QStringLiteral("An empty document")},
+    };
+    for (const QString &name : pageNames()) {
+        body += QStringLiteral("<a class=\"card\" href=\"about:%1\">"
+                               "<div class=\"title\">about:%1</div>"
+                               "<div class=\"desc\">%2</div></a>\n")
+                    .arg(name, escape(descriptions.value(name, QStringLiteral("A built-in page"))));
+    }
+    body += QStringLiteral("</div>\n");
 
-    body += QStringLiteral("<h2>Built-in pages</h2>\n<ul>\n");
-    for (const QString &name : pageNames())
-        body += QStringLiteral("<li><a href=\"about:%1\">about:%1</a></li>\n").arg(name);
-    body += QStringLiteral("</ul>\n");
+    body += QStringLiteral("<h2>Keyboard shortcuts</h2>\n<div class=\"keys\">\n");
+    const QList<QPair<QString, QString>> shortcuts = {
+        {QStringLiteral("New tab"), QStringLiteral("Ctrl/⌘ + T")},
+        {QStringLiteral("Close tab"), QStringLiteral("Ctrl/⌘ + W")},
+        {QStringLiteral("Focus the address bar"), QStringLiteral("Ctrl/⌘ + L")},
+        {QStringLiteral("Reload"), QStringLiteral("F5 or Ctrl/⌘ + R")},
+        {QStringLiteral("Back and forward"), QStringLiteral("Alt + ← / →")},
+        {QStringLiteral("Developer tools"), QStringLiteral("F12")},
+    };
+    for (const auto &entry : shortcuts) {
+        body += QStringLiteral("<div class=\"row\"><span>%1</span><span><kbd>%2</kbd></span></div>\n")
+                    .arg(entry.first, entry.second);
+    }
+    body += QStringLiteral("</div>\n");
 
-    body += QStringLiteral("<h2>What works today</h2>\n");
-    body += QStringLiteral("<ul>\n");
-    body += QStringLiteral("<li>HTTP/1.1 and HTTPS, with redirects, chunked bodies and "
-                           "compressed responses</li>\n");
-    body += QStringLiteral("<li>An HTML parser that builds the same tree a browser would, "
-                           "including implied elements</li>\n");
-    body += QStringLiteral("<li>A CSS engine with selectors, specificity, inheritance and "
-                           "media queries</li>\n");
-    body += QStringLiteral("<li>Block and inline layout with margin collapsing, floats and "
-                           "replaced elements</li>\n");
-    body += QStringLiteral("<li>Rendering to the window or to an image, headlessly</li>\n");
-    body += QStringLiteral("</ul>\n");
-
-    body += QStringLiteral("<h2>What does not work yet</h2>\n");
-    body += QStringLiteral("<ul>\n");
-    body += QStringLiteral("<li><strong>JavaScript.</strong> Scripts are parsed but never run, "
-                           "so interactive pages will not respond.</li>\n");
-    body += QStringLiteral("<li><strong>Flexbox and grid.</strong> Those layout modes are "
-                           "recognised but not implemented.</li>\n");
-    body += QStringLiteral("<li><strong>Forms and cookies.</strong> Nothing is submitted or "
-                           "stored between sessions.</li>\n");
-    body += QStringLiteral("</ul>\n");
-
-    body += QStringLiteral("<p class=\"meta\">%1 tab%2 open. See <a href=\"about:version\">"
-                           "about:version</a> for build details.</p>\n")
+    body += QStringLiteral("<h2>Session</h2>\n");
+    body += QStringLiteral("<p class=\"meta\">Version %1 &middot; %2 tab%3 open &middot; "
+                           "<a href=\"about:version\">details</a></p>\n")
+                .arg(escape(version))
                 .arg(tabCount)
                 .arg(tabCount == 1 ? QString() : QStringLiteral("s"));
 
@@ -105,16 +251,40 @@ QString homePage(const QString &version, int tabCount)
 QString versionPage(const QString &version)
 {
     QString body = QStringLiteral("<h1>Version</h1>\n");
-    body += QStringLiteral("<p><span class=\"badge\">%1</span></p>\n").arg(escape(version));
-    body += QStringLiteral("<h2>Components</h2>\n<ul>\n");
-    body += QStringLiteral("<li><code>network</code> — URLs, HTTP/1.1, TLS, redirects, gzip</li>\n");
-    body += QStringLiteral("<li><code>html</code> — tokenizer, tree construction, entities</li>\n");
-    body += QStringLiteral("<li><code>css</code> — tokenizer, selectors, cascade, media queries</li>\n");
-    body += QStringLiteral("<li><code>dom</code> — node tree with attributes and classes</li>\n");
-    body += QStringLiteral("<li><code>renderer</code> — box tree, layout, painting</li>\n");
-    body += QStringLiteral("<li><code>browser</code> — pages, tabs, history</li>\n");
-    body += QStringLiteral("<li><code>javascript</code> — integration seam only</li>\n");
-    body += QStringLiteral("</ul>\n");
+    body += QStringLiteral("<p class=\"subtitle\"><span class=\"badge\">%1</span></p>\n")
+                .arg(escape(version));
+
+    body += QStringLiteral("<h2>Rendering</h2>\n<div class=\"grid\">\n");
+    body += QStringLiteral("<div class=\"card\"><div class=\"title\">Qt WebEngine</div>"
+                           "<div class=\"desc\">Chromium: HTML, CSS, JavaScript and HTML5 "
+                           "media</div></div>\n");
+    body += QStringLiteral("<div class=\"card\"><div class=\"title\">Chromium version</div>"
+                           "<div class=\"desc\" id=\"chrome\">…</div></div>\n");
+    body += QStringLiteral("</div>\n");
+
+    body += QStringLiteral("<h2>Core library</h2>\n<p>The browser was built from scratch "
+                           "before it adopted Chromium, and that pipeline is still compiled "
+                           "and tested. It is what the unit and integration suites exercise.</p>\n");
+    body += QStringLiteral("<div class=\"keys\">\n");
+    const QList<QPair<QString, QString>> components = {
+        {QStringLiteral("network"), QStringLiteral("HTTP/1.1, TLS, redirects, cookies, caching")},
+        {QStringLiteral("html"), QStringLiteral("Tokenizer, tree construction, entities")},
+        {QStringLiteral("css"), QStringLiteral("Tokenizer, selectors, cascade, media queries")},
+        {QStringLiteral("dom"), QStringLiteral("Node tree with attributes and classes")},
+        {QStringLiteral("renderer"), QStringLiteral("Box tree, layout, painting")},
+        {QStringLiteral("javascript"), QStringLiteral("Embedded QuickJS engine and bindings")},
+        {QStringLiteral("storage"), QStringLiteral("History, bookmarks, cookies")},
+    };
+    for (const auto &entry : components) {
+        body += QStringLiteral("<div class=\"row\"><span><code>%1</code></span>"
+                               "<span>%2</span></div>\n")
+                    .arg(entry.first, entry.second);
+    }
+    body += QStringLiteral("</div>\n");
+
+    body += QStringLiteral("<p class=\"meta\">Qt WebEngine reports its Chromium version in "
+                           "the card above. See <a href=\"about:home\">the start page</a>.</p>\n");
+
     return pageShell(QStringLiteral("Version"), body);
 }
 
@@ -132,19 +302,18 @@ QString historyPage(const storage::HistoryStore *history)
                 .arg(history->count())
                 .arg(history->count() == 1 ? QStringLiteral("y") : QStringLiteral("ies"));
 
-    body += QStringLiteral("<ul>\n");
+    body += QStringLiteral("<div class=\"list\">\n");
     for (int i = history->count() - 1; i >= 0; --i) {
         const storage::HistoryEntry &entry = history->at(i);
         const QString title = entry.title.isEmpty() ? entry.url.toString() : entry.title;
-        body += QStringLiteral("<li><a href=\"%1\">%2</a>")
+        body += QStringLiteral("<a class=\"item\" href=\"%1\">%2")
                     .arg(escape(entry.url.toString()), escape(title));
-        body += QStringLiteral(" <span class=\"meta\">%1</span>")
-                    .arg(escape(entry.url.displayHost()));
+        body += QStringLiteral("<div class=\"host\">%1").arg(escape(entry.url.displayHost()));
         if (entry.visitCount > 1)
-            body += QStringLiteral(" <span class=\"meta\">%1 visits</span>").arg(entry.visitCount);
-        body += QStringLiteral("</li>\n");
+            body += QStringLiteral(" &middot; %1 visits").arg(entry.visitCount);
+        body += QStringLiteral("</div></a>\n");
     }
-    body += QStringLiteral("</ul>\n");
+    body += QStringLiteral("</div>\n");
 
     return pageShell(QStringLiteral("History"), body);
 }
@@ -153,8 +322,9 @@ QString bookmarksPage(const storage::BookmarkStore *bookmarks)
 {
     if (!bookmarks || bookmarks->isEmpty()) {
         return pageShell(QStringLiteral("Bookmarks"),
-                         QStringLiteral("<h1>Bookmarks</h1><p>No bookmarks yet. Use the star "
-                                        "button in the toolbar to save the page you are on.</p>"));
+                         QStringLiteral("<h1>Bookmarks</h1><p class=\"subtitle\">Nothing saved "
+                                        "yet. Press the star in the toolbar to keep the page you "
+                                        "are on.</p>"));
     }
     return pageShell(QStringLiteral("Bookmarks"), bookmarks->toHtml());
 }
@@ -168,6 +338,8 @@ QString blankPage()
 QString aboutAbout()
 {
     QString body = QStringLiteral("<h1>Built-in pages</h1>\n");
+    body += QStringLiteral("<p class=\"subtitle\">These pages come from inside the browser, "
+                           "so they work with no network connection.</p>\n");
 
     const QHash<QString, QString> descriptions = {
         {QStringLiteral("home"), QStringLiteral("The new tab page")},
@@ -178,12 +350,14 @@ QString aboutAbout()
         {QStringLiteral("blank"), QStringLiteral("An empty document")},
     };
 
-    body += QStringLiteral("<ul>\n");
+    body += QStringLiteral("<div class=\"grid\">\n");
     for (const QString &name : pageNames()) {
-        body += QStringLiteral("<li><a href=\"about:%1\">about:%1</a> — %2</li>\n")
+        body += QStringLiteral("<a class=\"card\" href=\"about:%1\">"
+                               "<div class=\"title\">about:%1</div>"
+                               "<div class=\"desc\">%2</div></a>\n")
                     .arg(name, escape(descriptions.value(name, QStringLiteral("A built-in page"))));
     }
-    body += QStringLiteral("</ul>\n");
+    body += QStringLiteral("</div>\n");
 
     return pageShell(QStringLiteral("Built-in pages"), body);
 }
@@ -274,7 +448,7 @@ QString errorPage(const network::Url &url, const QString &kind, const QString &d
     }
 
     QString body = QStringLiteral("<h1>%1</h1>\n").arg(heading);
-    body += QStringLiteral("<p>%1</p>\n").arg(explanation);
+    body += QStringLiteral("<p class=\"subtitle\">%1</p>\n").arg(explanation);
 
     if (!url.toString().isEmpty() && kind != QLatin1String("notfound")) {
         body += QStringLiteral("<p class=\"meta\">%1</p>\n").arg(escape(url.toString()));
@@ -282,13 +456,13 @@ QString errorPage(const network::Url &url, const QString &kind, const QString &d
     if (!hint.isEmpty())
         body += QStringLiteral("<p>%1</p>\n").arg(hint);
     if (!details.isEmpty() && kind != QLatin1String("notfound")) {
-        body += QStringLiteral("<div class=\"card\"><p class=\"meta\">%1</p></div>\n")
+        body += QStringLiteral("<div class=\"card\"><p class=\"meta\" style=\"margin:0\">%1</p></div>\n")
                     .arg(escape(details));
     }
 
-    body += QStringLiteral("<p><a href=\"about:home\">Start page</a></p>\n");
+    body += QStringLiteral("<p style=\"margin-top:24px\"><a href=\"about:home\">Start page</a></p>\n");
 
-    return pageShell(heading, body);
+    return pageShell(heading, body, QStringLiteral(" error"));
 }
 
 } // namespace oqb::browser::builtin

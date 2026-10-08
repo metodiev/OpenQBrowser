@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QIcon>
 #include <QWidget>
 
 #include "network/Url.h"
@@ -67,6 +68,9 @@ signals:
     void loadFinished(bool ok);
     void loadProgress(int progress);
     void linkHovered(const QString &url);
+    /// The page's own icon, for the tab strip. A page without one reports an
+    /// empty icon, which the tab then draws without.
+    void iconChanged(const QIcon &icon);
     /// The view a popup or target=_blank asked for; the window adopts it as a
     /// new tab.
     void newViewRequested(QWebEngineView *view);
@@ -78,6 +82,11 @@ private:
     void loadAbout(const network::Url &url);
     /// Records the finished load in the history store.
     void recordVisit();
+    /// Asks the page which icon it declares and fetches it for the tab strip.
+    void refreshIcon();
+    /// Reports an icon for `source` if it is new, so the tab strip is not
+    /// repainted for an icon it already shows.
+    void applyIcon(const QString &source, const QIcon &icon);
 
     QWebEngineView *m_view = nullptr;
     QWebEnginePage *m_page = nullptr;
@@ -91,6 +100,11 @@ private:
     network::Url m_url;
     QString m_title;
     bool m_loading = false;
+    /// Incremented by every navigation, so an icon fetched for the previous
+    /// page is discarded rather than applied to the new one.
+    quint64 m_iconGeneration = 0;
+    /// The icon URL currently in use, so the same icon is not re-emitted.
+    QString m_iconSource;
 };
 
 } // namespace oqb::ui

@@ -1,10 +1,13 @@
 #include "ui/MainWindow.h"
 
+#include "ui/TabBar.h"
+#include "ui/Theme.h"
 #include "ui/WebTab.h"
 
 #include <QAction>
 #include <QApplication>
 #include <QDockWidget>
+#include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
@@ -12,143 +15,211 @@
 #include <QMenuBar>
 #include <QProgressBar>
 #include <QShortcut>
+#include <QStackedWidget>
 #include <QStatusBar>
-#include <QTabWidget>
-#include <QToolBar>
+#include <QStyleHints>
+#include <QToolButton>
+#include <QVBoxLayout>
 #include <QWebEngineHistory>
 #include <QWebEngineProfile>
 #include <QWebEngineView>
 
 namespace oqb::ui {
 
+namespace {
+
+/// A flat icon button for the toolbar and the tab strip. The theme styles it;
+/// this only sets what the stylesheet cannot express.
+QToolButton *makeIconButton(NavIcon icon, const Theme &theme, const QString &toolTip,
+                            int size = 30)
+{
+    auto *button = new QToolButton;
+    button->setIcon(theme.icon(icon, theme.iconColor, 17));
+    button->setIconSize(QSize(17, 17));
+    button->setFixedSize(size, size);
+    button->setToolTip(toolTip);
+    button->setCursor(Qt::ArrowCursor);
+    button->setFocusPolicy(Qt::NoFocus);
+    button->setAutoRaise(true);
+    return button;
+}
+
+} // namespace
+
 MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
     : QMainWindow(parent)
     , m_settings(settings)
+    , m_theme(Theme::forCurrentColorScheme())
 {
     setWindowTitle(QStringLiteral("OpenQBrowser"));
-    // The icon is compiled into the binary as a Qt resource, so it does not have
-    // to be found on disk at run time.
     setWindowIcon(QIcon(QStringLiteral(":/assets/icon.svg")));
-    resize(static_cast<int>(settings.viewportWidth + 20),
-           static_cast<int>(settings.viewportHeight + 120));
+    resize(static_cast<int>(settings.viewportWidth + 40),
+           static_cast<int>(settings.viewportHeight + 130));
 
     // Every tab shares one profile, so cookies, cache and local storage are
-    // common to the window and survive restarts. The default profile is
-    // persistent and owned by Qt.
+    // common to the window and survive restarts.
     m_profile = QWebEngineProfile::defaultProfile();
     if (!settings.userAgent.isEmpty())
         m_profile->setHttpUserAgent(settings.userAgent);
 
-    // ------------------------------------------------------------- toolbar
-    auto *toolbar = addToolBar(QStringLiteral("Navigation"));
-    toolbar->setMovable(false);
+    // ------------------------------------------------------------ structure
+    //
+    // The chrome is assembled by hand rather than with QMainWindow's toolbar
+    // area, because a browser puts the tabs above the toolbar and the progress
+    // line directly under it - a sibling order QMainWindow cannot express.
+    auto *central = new QWidget;
+    auto *centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(0);
 
-    m_backAction = toolbar->addAction(QStringLiteral("◀"));
-    m_backAction->setToolTip(QStringLiteral("Back (Alt+Left)"));
-    connect(m_backAction, &QAction::triggered, this, &MainWindow::onBack);
+    auto *chrome = new QWidget;
+    chrome->setObjectName(QStringLiteral("BrowserChrome"));
+    chrome->setAutoFillBackground(false);
+    auto *chromeLayout = new QVBoxLayout(chrome);
+    chromeLayout->setContentsMargins(0, 0, 0, 0);
+    chromeLayout->setSpacing(0);
 
-    m_forwardAction = toolbar->addAction(QStringLiteral("▶"));
-    m_forwardAction->setToolTip(QStringLiteral("Forward (Alt+Right)"));
-    connect(m_forwardAction, &QAction::triggered, this, &MainWindow::onForward);
+    // ------------------------------------------------------------- tab strip
+    auto *tabRow = new QWidget;
+    tabRow->setObjectName(QStringLiteral("TabRow"));
+    auto *tabLayout = new QHBoxLayout(tabRow);
+    tabLayout->setContentsMargins(8, 7, 8, 0);
+    tabLayout->setSpacing(4);
 
-    m_reloadAction = toolbar->addAction(QStringLiteral("⟳"));
-    m_reloadAction->setToolTip(QStringLiteral("Reload (F5)"));
-    connect(m_reloadAction, &QAction::triggered, this, &MainWindow::onReload);
+    m_tabBar = new TabBar;
+    m_tabBar->setTheme(m_theme);
+    tabLayout->addWidget(m_tabBar, 1);
 
-    m_stopAction = toolbar->addAction(QStringLiteral("✕"));
-    m_stopAction->setToolTip(QStringLiteral("Stop"));
-    connect(m_stopAction, &QAction::triggered, this, &MainWindow::onStop);
-    m_stopAction->setEnabled(false);
+    m_newTabButton = makeIconButton(NavIcon::NewTab, m_theme, tr("New tab (Ctrl+T)"), 28);
+    m_newTabButton->setObjectName(QStringLiteral("NewTabButton"));
+    tabLayout->addWidget(m_newTabButton, 0, Qt::AlignVCenter);
+
+    chromeLayout->addWidget(tabRow);
+
+    // --------------------------------------------------------------- toolbar
+    auto *toolRow = new QWidget;
+    toolRow->setObjectName(QStringLiteral("ToolRow"));
+    auto *toolLayout = new QHBoxLayout(toolRow);
+    toolLayout->setContentsMargins(8, 6, 8, 8);
+    toolLayout->setSpacing(4);
+
+    m_backButton = makeIconButton(NavIcon::Back, m_theme, tr("Back (Alt+Left)"));
+    m_forwardButton = makeIconButton(NavIcon::Forward, m_theme, tr("Forward (Alt+Right)"));
+    m_reloadButton = makeIconButton(NavIcon::Reload, m_theme, tr("Reload (F5)"));
+    m_homeButton = makeIconButton(NavIcon::Home, m_theme, tr("Home"));
+
+    toolLayout->addWidget(m_backButton);
+    toolLayout->addWidget(m_forwardButton);
+    toolLayout->addWidget(m_reloadButton);
+    toolLayout->addWidget(m_homeButton);
+    toolLayout->addSpacing(4);
 
     m_addressBar = new QLineEdit;
-    m_addressBar->setPlaceholderText(QStringLiteral("Search or enter an address"));
+    m_addressBar->setObjectName(QStringLiteral("AddressBar"));
+    m_addressBar->setPlaceholderText(tr("Search or enter an address"));
     m_addressBar->setClearButtonEnabled(true);
-    connect(m_addressBar, &QLineEdit::returnPressed, this, &MainWindow::onAddressEntered);
-    toolbar->addWidget(m_addressBar);
+    m_addressBar->setMinimumHeight(32);
+    toolLayout->addWidget(m_addressBar, 1);
 
-    m_bookmarkAction = toolbar->addAction(QStringLiteral("☆"));
-    m_bookmarkAction->setToolTip(QStringLiteral("Bookmark this page"));
-    connect(m_bookmarkAction, &QAction::triggered, this, &MainWindow::onToggleBookmark);
+    m_bookmarkButton = makeIconButton(NavIcon::Star, m_theme, tr("Bookmark this page"));
+    m_menuButton = makeIconButton(NavIcon::Menu, m_theme, tr("Menu"));
+    toolLayout->addWidget(m_bookmarkButton);
+    toolLayout->addWidget(m_menuButton);
 
-    m_devToolsAction = toolbar->addAction(QStringLiteral("DevTools"));
-    m_devToolsAction->setToolTip(QStringLiteral("Show the developer tools (F12)"));
-    m_devToolsAction->setCheckable(true);
-    m_devToolsAction->setShortcut(QKeySequence(Qt::Key_F12));
-    connect(m_devToolsAction, &QAction::toggled, this, &MainWindow::onToggleDevTools);
+    chromeLayout->addWidget(toolRow);
 
-    // ------------------------------------------------------------- devtools
-    //
-    // The inspector is the Chromium DevTools page, docked so it can be resized
-    // or floated like a real browser's. It starts hidden.
+    centralLayout->addWidget(chrome);
+
+    // The progress line sits between the chrome and the page, where Chrome puts
+    // it: the page below never moves, and the bar is visible without looking at
+    // the window's edge.
+    m_progress = new QProgressBar;
+    m_progress->setObjectName(QStringLiteral("LoadProgress"));
+    m_progress->setRange(0, 100);
+    m_progress->setTextVisible(false);
+    m_progress->setFixedHeight(3);
+    centralLayout->addWidget(m_progress);
+
+    m_stack = new QStackedWidget;
+    centralLayout->addWidget(m_stack, 1);
+
+    setCentralWidget(central);
+
+    // ------------------------------------------------------------- status bar
+    m_statusLabel = new QLabel;
+    statusBar()->addWidget(m_statusLabel, 1);
+
+    // ----------------------------------------------------------- devtools
     m_devToolsView = new QWebEngineView(this);
-    m_devToolsDock = new QDockWidget(QStringLiteral("Developer Tools"), this);
+    m_devToolsDock = new QDockWidget(tr("Developer Tools"), this);
     m_devToolsDock->setObjectName(QStringLiteral("devToolsDock"));
     m_devToolsDock->setWidget(m_devToolsView);
     m_devToolsDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::RightDockWidgetArea);
     addDockWidget(Qt::BottomDockWidgetArea, m_devToolsDock);
     m_devToolsDock->hide();
-
-    // Closing the dock with its own close box unchecks the toolbar button, so the
-    // two ways of controlling it cannot disagree.
     connect(m_devToolsDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
-        if (m_devToolsAction->isChecked() != visible)
+        if (m_devToolsAction && m_devToolsAction->isChecked() != visible)
             m_devToolsAction->setChecked(visible);
     });
 
-    // ---------------------------------------------------------------- menus
-    QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
-    fileMenu->addAction(QStringLiteral("&New Tab"), QKeySequence::AddTab, this,
-                        [this] { openInNewTab(network::Url::parse(QStringLiteral("about:home"))); });
-    fileMenu->addAction(QStringLiteral("&Close Tab"), QKeySequence::Close, this,
-                        [this] { onTabClosed(m_tabs->currentIndex()); });
-    fileMenu->addSeparator();
-    fileMenu->addAction(QStringLiteral("&Quit"), QKeySequence::Quit, qApp, &QApplication::quit);
+    // ------------------------------------------------------------- behaviour
+    connect(m_tabBar, &QTabBar::currentChanged, this, &MainWindow::onTabChanged);
+    connect(m_tabBar, &TabBar::closeRequested, this, &MainWindow::onTabCloseRequested);
+    connect(m_tabBar, &TabBar::newTabRequested, this, &MainWindow::openNewTab);
+    connect(m_newTabButton, &QToolButton::clicked, this, &MainWindow::openNewTab);
 
-    QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
-    viewMenu->addAction(m_backAction);
-    viewMenu->addAction(m_forwardAction);
-    viewMenu->addAction(m_reloadAction);
-    viewMenu->addSeparator();
-    viewMenu->addAction(m_devToolsAction);
-
-    QMenu *pagesMenu = menuBar()->addMenu(QStringLiteral("&Pages"));
-    pagesMenu->addAction(QStringLiteral("New Tab Page"), this,
-                         [this] { openUrl(network::Url::parse(QStringLiteral("about:home"))); });
-    pagesMenu->addAction(QStringLiteral("History"), this,
-                         [this] { openUrl(network::Url::parse(QStringLiteral("about:history"))); });
-    pagesMenu->addAction(QStringLiteral("Bookmarks"), this,
-                         [this] { openUrl(network::Url::parse(QStringLiteral("about:bookmarks"))); });
-    pagesMenu->addAction(QStringLiteral("Version"), this,
-                         [this] { openUrl(network::Url::parse(QStringLiteral("about:version"))); });
-
-    // ------------------------------------------------------------ status bar
-    m_statusLabel = new QLabel;
-    statusBar()->addWidget(m_statusLabel, 1);
-
-    m_progress = new QProgressBar;
-    m_progress->setMaximumWidth(140);
-    m_progress->setRange(0, 100);
-    m_progress->setVisible(false);
-    statusBar()->addPermanentWidget(m_progress);
-
-    // ------------------------------------------------------------------ tabs
-    m_tabs = new QTabWidget;
-    m_tabs->setTabsClosable(true);
-    m_tabs->setMovable(true);
-    connect(m_tabs, &QTabWidget::currentChanged, this, &MainWindow::onTabChanged);
-    connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::onTabClosed);
-
-    setCentralWidget(m_tabs);
+    connect(m_addressBar, &QLineEdit::returnPressed, this, &MainWindow::onAddressEntered);
+    connect(m_backButton, &QToolButton::clicked, this, &MainWindow::onBack);
+    connect(m_forwardButton, &QToolButton::clicked, this, &MainWindow::onForward);
+    connect(m_reloadButton, &QToolButton::clicked, this, &MainWindow::onReloadOrStop);
+    connect(m_homeButton, &QToolButton::clicked, this, &MainWindow::openNewTab);
+    connect(m_bookmarkButton, &QToolButton::clicked, this, &MainWindow::onToggleBookmark);
+    connect(m_menuButton, &QToolButton::clicked, this, [this] {
+        QMenu menu(this);
+        menu.addAction(m_newTabAction);
+        menu.addAction(m_closeTabAction);
+        menu.addSeparator();
+        menu.addAction(tr("History"), this,
+                       [this] { openUrl(network::Url::parse(QStringLiteral("about:history"))); });
+        menu.addAction(tr("Bookmarks"), this,
+                       [this] { openUrl(network::Url::parse(QStringLiteral("about:bookmarks"))); });
+        menu.addSeparator();
+        menu.addAction(m_devToolsAction);
+        menu.addSeparator();
+        menu.addAction(tr("Quit"), qApp, &QApplication::quit);
+        menu.exec(m_menuButton->mapToGlobal(QPoint(0, m_menuButton->height() + 4)));
+    });
 
     // ------------------------------------------------------------- shortcuts
-    auto *backShortcut = new QShortcut(QKeySequence(Qt::ALT | Qt::Key_Left), this);
-    connect(backShortcut, &QShortcut::activated, this, &MainWindow::onBack);
+    //
+    // The shortcuts live on actions as well as on the menu bar, so they work
+    // when the menu bar is hidden (macOS puts it in the system bar) and keep
+    // working while the page has focus.
+    m_newTabAction = new QAction(tr("New Tab"), this);
+    m_newTabAction->setShortcut(QKeySequence::AddTab);
+    connect(m_newTabAction, &QAction::triggered, this, &MainWindow::openNewTab);
+    addAction(m_newTabAction);
 
-    auto *forwardShortcut = new QShortcut(QKeySequence(Qt::ALT | Qt::Key_Right), this);
-    connect(forwardShortcut, &QShortcut::activated, this, &MainWindow::onForward);
+    m_closeTabAction = new QAction(tr("Close Tab"), this);
+    m_closeTabAction->setShortcut(QKeySequence::Close);
+    connect(m_closeTabAction, &QAction::triggered, this,
+            [this] { onTabCloseRequested(m_tabBar->currentIndex()); });
+    addAction(m_closeTabAction);
 
-    auto *reloadShortcut = new QShortcut(QKeySequence::Refresh, this);
-    connect(reloadShortcut, &QShortcut::activated, this, &MainWindow::onReload);
+    m_backAction = new QAction(tr("Back"), this);
+    m_backAction->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Left));
+    connect(m_backAction, &QAction::triggered, this, &MainWindow::onBack);
+    addAction(m_backAction);
+
+    m_forwardAction = new QAction(tr("Forward"), this);
+    m_forwardAction->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Right));
+    connect(m_forwardAction, &QAction::triggered, this, &MainWindow::onForward);
+    addAction(m_forwardAction);
+
+    m_reloadAction = new QAction(tr("Reload"), this);
+    m_reloadAction->setShortcut(QKeySequence::Refresh);
+    connect(m_reloadAction, &QAction::triggered, this, &MainWindow::onReloadOrStop);
+    addAction(m_reloadAction);
 
     auto *focusShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+L")), this);
     connect(focusShortcut, &QShortcut::activated, this, [this] {
@@ -156,15 +227,85 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
         m_addressBar->selectAll();
     });
 
+    m_devToolsAction = new QAction(tr("Developer Tools"), this);
+    m_devToolsAction->setCheckable(true);
+    m_devToolsAction->setShortcut(QKeySequence(Qt::Key_F12));
+    connect(m_devToolsAction, &QAction::toggled, this, &MainWindow::onToggleDevTools);
+    addAction(m_devToolsAction);
+
+    // ---------------------------------------------------------------- menus
+    QMenu *fileMenu = menuBar()->addMenu(tr("&File"));
+    fileMenu->addAction(m_newTabAction);
+    fileMenu->addAction(m_closeTabAction);
+    fileMenu->addSeparator();
+    fileMenu->addAction(tr("&Quit"), QKeySequence::Quit, qApp, &QApplication::quit);
+
+    QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
+    viewMenu->addAction(m_backAction);
+    viewMenu->addAction(m_forwardAction);
+    viewMenu->addAction(m_reloadAction);
+    viewMenu->addSeparator();
+    viewMenu->addAction(m_devToolsAction);
+
+    QMenu *pagesMenu = menuBar()->addMenu(tr("&Pages"));
+    pagesMenu->addAction(tr("New Tab Page"), this, &MainWindow::openNewTab);
+    pagesMenu->addAction(tr("History"), this,
+                         [this] { openUrl(network::Url::parse(QStringLiteral("about:history"))); });
+    pagesMenu->addAction(tr("Bookmarks"), this,
+                         [this] { openUrl(network::Url::parse(QStringLiteral("about:bookmarks"))); });
+    pagesMenu->addAction(tr("Version"), this,
+                         [this] { openUrl(network::Url::parse(QStringLiteral("about:version"))); });
+
+    // --------------------------------------------------------------- theme
+    applyTheme();
+    connect(qApp->styleHints(), &QStyleHints::colorSchemeChanged, this,
+            [this](Qt::ColorScheme) { applyTheme(); });
+
     // The first tab shows the new tab page, which is what a browser does.
-    openInNewTab(network::Url::parse(QStringLiteral("about:home")));
+    openNewTab();
 }
 
 MainWindow::~MainWindow() = default;
 
+void MainWindow::applyTheme()
+{
+    m_theme = Theme::forCurrentColorScheme();
+    setStyleSheet(m_theme.styleSheet());
+
+    // The painted icons are not styled by the stylesheet, so they are rebuilt
+    // for the new colours here.
+    const auto refresh = [this](QToolButton *button, NavIcon icon, const QString &tip,
+                                bool active = false) {
+        if (!button)
+            return;
+        button->setIcon(m_theme.icon(icon, active ? m_theme.iconColorActive : m_theme.iconColor,
+                                     17));
+        button->setToolTip(tip);
+    };
+
+    refresh(m_newTabButton, NavIcon::NewTab, tr("New tab (Ctrl+T)"));
+    refresh(m_backButton, NavIcon::Back, tr("Back (Alt+Left)"));
+    refresh(m_forwardButton, NavIcon::Forward, tr("Forward (Alt+Right)"));
+    refresh(m_reloadButton, NavIcon::Reload, tr("Reload (F5)"));
+    refresh(m_homeButton, NavIcon::Home, tr("Home"));
+    refresh(m_menuButton, NavIcon::Menu, tr("Menu"));
+
+    updateSecurityIcon();
+
+    if (m_tabBar)
+        m_tabBar->setTheme(m_theme);
+
+    updateNavigationState();
+}
+
 int MainWindow::tabCount() const
 {
-    return m_tabs ? m_tabs->count() : 0;
+    return m_tabBar ? m_tabBar->count() : 0;
+}
+
+int MainWindow::indexOfTab(const WebTab *tab) const
+{
+    return m_stack ? m_stack->indexOf(const_cast<WebTab *>(tab)) : -1;
 }
 
 WebTab *MainWindow::addTab()
@@ -174,13 +315,22 @@ WebTab *MainWindow::addTab()
     tab->setBookmarks(&m_bookmarks);
     tab->setSearchTemplate(m_settings.searchTemplate);
 
+    m_stack->addWidget(tab);
+    const int index = m_tabBar->addTab(tr("New Tab"));
+    m_tabBar->setTabData(index, QVariant());
+    m_tabBar->setCurrentIndex(index);
+
     connect(tab, &WebTab::titleChanged, this, [this, tab](const QString &title) {
+        const int i = m_stack->indexOf(tab);
+        if (i >= 0)
+            m_tabBar->setTabText(i, title.isEmpty() ? tr("New Tab") : title);
         updateTitle();
-        // Keep the tab's own label in step with its document title.
-        for (int i = 0; i < m_tabs->count(); ++i) {
-            if (qobject_cast<WebTab *>(m_tabs->widget(i)) == tab)
-                m_tabs->setTabText(i, title.left(24));
-        }
+    });
+
+    connect(tab, &WebTab::iconChanged, this, [this, tab](const QIcon &icon) {
+        const int i = m_stack->indexOf(tab);
+        if (i >= 0)
+            m_tabBar->setTabIcon(i, icon);
     });
 
     connect(tab, &WebTab::urlChanged, this, [this](const network::Url &) {
@@ -188,32 +338,51 @@ WebTab *MainWindow::addTab()
     });
     connect(tab, &WebTab::loadStarted, this, [this] { updateNavigationState(); });
     connect(tab, &WebTab::loadFinished, this, [this](bool) { updateNavigationState(); });
-    connect(tab, &WebTab::loadProgress, this, [this](int progress) {
-        if (qobject_cast<WebTab *>(m_tabs->currentWidget()) == currentTab()) {
-            m_progress->setValue(progress);
-            m_progress->setVisible(progress > 0 && progress < 100);
-        }
+    connect(tab, &WebTab::loadProgress, this, [this, tab](int progress) {
+        if (tab != currentTab())
+            return;
+        m_progress->setValue(progress);
+        m_progress->setVisible(progress > 0 && progress < 100);
     });
     connect(tab, &WebTab::linkHovered, this, [this](const QString &url) {
         m_statusLabel->setText(url);
     });
     connect(tab, &WebTab::newViewRequested, this, &MainWindow::onNewViewRequested);
 
-    m_tabs->addTab(tab, QStringLiteral("New Tab"));
     syncTabs();
     return tab;
 }
 
 WebTab *MainWindow::currentTab() const
 {
-    return qobject_cast<WebTab *>(m_tabs->currentWidget());
+    return qobject_cast<WebTab *>(m_stack->currentWidget());
+}
+
+void MainWindow::removeTab(int index)
+{
+    if (index < 0 || index >= m_tabBar->count())
+        return;
+
+    QWidget *page = m_stack->widget(index);
+    m_tabBar->removeTab(index);
+    m_stack->removeWidget(page);
+    delete page;
+
+    // Closing the last tab opens a fresh one, so the window never sits empty.
+    if (m_tabBar->count() == 0) {
+        openNewTab();
+        return;
+    }
+
+    syncTabs();
+    updateNavigationState();
 }
 
 void MainWindow::syncTabs()
 {
-    const int count = m_tabs->count();
+    const int count = m_tabBar->count();
     for (int i = 0; i < count; ++i) {
-        if (auto *tab = qobject_cast<WebTab *>(m_tabs->widget(i)))
+        if (auto *tab = qobject_cast<WebTab *>(m_stack->widget(i)))
             tab->setTabCount(count);
     }
 }
@@ -222,11 +391,20 @@ void MainWindow::openUrl(const network::Url &url)
 {
     WebTab *tab = currentTab();
     if (!tab) {
-        tab = addTab();
+        openNewTab();
+        tab = currentTab();
         if (!tab)
             return;
     }
     tab->navigate(url);
+}
+
+void MainWindow::openNewTab()
+{
+    WebTab *tab = addTab();
+    if (!tab)
+        return;
+    tab->navigate(network::Url::parse(QStringLiteral("about:home")));
 }
 
 void MainWindow::openInNewTab(const network::Url &url)
@@ -234,23 +412,28 @@ void MainWindow::openInNewTab(const network::Url &url)
     WebTab *tab = addTab();
     if (!tab)
         return;
-    m_tabs->setCurrentIndex(m_tabs->count() - 1);
     tab->navigate(url);
 }
 
-void MainWindow::onToggleDevTools(bool show)
+void MainWindow::onTabChanged(int index)
 {
-    if (!m_devToolsDock || !m_devToolsView)
-        return;
+    m_stack->setCurrentIndex(index);
 
-    m_devToolsDock->setVisible(show);
+    // A tab that has never loaded anything shows the new tab page, so a fresh
+    // tab is never a blank pane.
+    updateTitle();
+    updateNavigationState();
+    updateSecurityIcon();
 
-    if (show) {
+    if (m_devToolsDock && m_devToolsDock->isVisible()) {
         if (WebTab *tab = currentTab())
             tab->attachDevTools(m_devToolsView->page());
-    } else if (WebTab *tab = currentTab()) {
-        tab->detachDevTools();
     }
+}
+
+void MainWindow::onTabCloseRequested(int index)
+{
+    removeTab(index);
 }
 
 void MainWindow::onNewViewRequested(QWebEngineView *view)
@@ -262,58 +445,31 @@ void MainWindow::onNewViewRequested(QWebEngineView *view)
     tab->setBookmarks(&m_bookmarks);
     tab->setSearchTemplate(m_settings.searchTemplate);
 
+    m_stack->addWidget(tab);
+    m_stack->setCurrentWidget(tab);
+    const int index = m_tabBar->addTab(view->title().isEmpty() ? tr("New Tab") : view->title());
+    m_tabBar->setCurrentIndex(index);
+
     connect(tab, &WebTab::titleChanged, this, [this, tab](const QString &title) {
+        const int i = m_stack->indexOf(tab);
+        if (i >= 0)
+            m_tabBar->setTabText(i, title.isEmpty() ? tr("New Tab") : title);
         updateTitle();
-        for (int i = 0; i < m_tabs->count(); ++i) {
-            if (qobject_cast<WebTab *>(m_tabs->widget(i)) == tab)
-                m_tabs->setTabText(i, title.left(24));
-        }
     });
-    connect(tab, &WebTab::urlChanged, this, [this](const network::Url &) { updateNavigationState(); });
+    connect(tab, &WebTab::iconChanged, this, [this, tab](const QIcon &icon) {
+        const int i = m_stack->indexOf(tab);
+        if (i >= 0)
+            m_tabBar->setTabIcon(i, icon);
+    });
+    connect(tab, &WebTab::urlChanged, this,
+            [this](const network::Url &) { updateNavigationState(); });
     connect(tab, &WebTab::loadStarted, this, [this] { updateNavigationState(); });
     connect(tab, &WebTab::loadFinished, this, [this](bool) { updateNavigationState(); });
-    connect(tab, &WebTab::linkHovered, this, [this](const QString &url) {
-        m_statusLabel->setText(url);
-    });
+    connect(tab, &WebTab::linkHovered, this,
+            [this](const QString &url) { m_statusLabel->setText(url); });
     connect(tab, &WebTab::newViewRequested, this, &MainWindow::onNewViewRequested);
 
-    m_tabs->addTab(tab, QStringLiteral("New Tab"));
-    m_tabs->setCurrentIndex(m_tabs->count() - 1);
     syncTabs();
-}
-
-void MainWindow::onTabChanged(int index)
-{
-    Q_UNUSED(index);
-
-    updateTitle();
-    updateNavigationState();
-
-    // The inspector follows the tab, so switching tabs shows the new page's
-    // state rather than the previous one's.
-    if (m_devToolsDock && m_devToolsDock->isVisible()) {
-        if (WebTab *tab = currentTab())
-            tab->attachDevTools(m_devToolsView->page());
-    }
-}
-
-void MainWindow::onTabClosed(int index)
-{
-    if (index < 0 || index >= m_tabs->count())
-        return;
-
-    QWidget *widget = m_tabs->widget(index);
-    m_tabs->removeTab(index);
-    delete widget;
-
-    // Closing the last tab opens a fresh one, so the window never sits empty.
-    if (m_tabs->count() == 0) {
-        openInNewTab(network::Url::parse(QStringLiteral("about:home")));
-        return;
-    }
-
-    syncTabs();
-    updateNavigationState();
 }
 
 void MainWindow::onAddressEntered()
@@ -338,16 +494,18 @@ void MainWindow::onForward()
         tab->forward();
 }
 
-void MainWindow::onReload()
+void MainWindow::onReloadOrStop()
 {
-    if (WebTab *tab = currentTab())
-        tab->reload();
-}
+    WebTab *tab = currentTab();
+    if (!tab)
+        return;
 
-void MainWindow::onStop()
-{
-    if (WebTab *tab = currentTab())
+    // One button does both, as in every browser: while a page is loading it
+    // stops it, and otherwise it reloads.
+    if (tab->isLoading())
         tab->stop();
+    else
+        tab->reload();
 }
 
 void MainWindow::onToggleBookmark()
@@ -357,8 +515,57 @@ void MainWindow::onToggleBookmark()
         return;
 
     const bool added = m_bookmarks.toggle(tab->url(), tab->title());
-    m_bookmarkAction->setText(added ? QStringLiteral("★") : QStringLiteral("☆"));
-    m_statusLabel->setText(added ? QStringLiteral("Bookmarked") : QStringLiteral("Bookmark removed"));
+    m_bookmarkButton->setIcon(
+        m_theme.icon(added ? NavIcon::StarFilled : NavIcon::Star,
+                     added ? m_theme.accent : m_theme.iconColor, 17));
+    m_statusLabel->setText(added ? tr("Bookmarked") : tr("Bookmark removed"));
+}
+
+void MainWindow::onToggleDevTools(bool show)
+{
+    if (!m_devToolsDock || !m_devToolsView)
+        return;
+
+    m_devToolsDock->setVisible(show);
+
+    if (WebTab *tab = currentTab()) {
+        if (show)
+            tab->attachDevTools(m_devToolsView->page());
+        else
+            tab->detachDevTools();
+    }
+}
+
+void MainWindow::updateSecurityIcon()
+{
+    WebTab *tab = currentTab();
+    const network::Url url = tab ? tab->url() : network::Url();
+
+    NavIcon which = NavIcon::Globe;
+    QString tip = tr("Not secure");
+    if (url.isHttps()) {
+        which = NavIcon::Lock;
+        tip = tr("Connection is encrypted");
+    } else if (url.isAbout()) {
+        which = NavIcon::Info;
+        tip = tr("Built-in page");
+    }
+
+    // The icon is shown inside the field, at its leading edge, which is where a
+    // browser tells the user what they are connected to.
+    const QList<QAction *> actions = m_addressBar->actions();
+    for (QAction *action : actions) {
+        if (action->property("security").toBool()) {
+            m_addressBar->removeAction(action);
+            action->deleteLater();
+        }
+    }
+
+    auto *action = m_addressBar->addAction(m_theme.icon(which, m_theme.iconColor, 15),
+                                           QLineEdit::LeadingPosition);
+    action->setProperty("security", true);
+    action->setToolTip(tip);
+    action->setEnabled(false);
 }
 
 void MainWindow::updateNavigationState()
@@ -366,33 +573,52 @@ void MainWindow::updateNavigationState()
     WebTab *tab = currentTab();
 
     if (!tab) {
-        m_backAction->setEnabled(false);
-        m_forwardAction->setEnabled(false);
-        m_stopAction->setEnabled(false);
+        m_backButton->setEnabled(false);
+        m_forwardButton->setEnabled(false);
         m_addressBar->clear();
+        m_progress->setVisible(false);
         return;
     }
 
-    m_backAction->setEnabled(tab->view()->history()->canGoBack());
-    m_forwardAction->setEnabled(tab->view()->history()->canGoForward());
-    m_stopAction->setEnabled(tab->isLoading());
-    m_reloadAction->setEnabled(!tab->isLoading());
+    const bool canGoBack = tab->view()->history()->canGoBack();
+    const bool canGoForward = tab->view()->history()->canGoForward();
+    m_backButton->setEnabled(canGoBack);
+    m_forwardButton->setEnabled(canGoForward);
+    m_backAction->setEnabled(canGoBack);
+    m_forwardAction->setEnabled(canGoForward);
+
+    // A disabled button should read as unavailable, which the stylesheet cannot
+    // express for a painted icon.
+    const auto tint = [this](QToolButton *button, NavIcon icon, bool enabled,
+                             const QString &tip) {
+        QColor color = m_theme.iconColor;
+        if (!enabled)
+            color.setAlpha(80);
+        button->setIcon(m_theme.icon(icon, color, 17));
+        button->setEnabled(enabled);
+        button->setToolTip(tip);
+    };
+    tint(m_backButton, NavIcon::Back, canGoBack, tr("Back (Alt+Left)"));
+    tint(m_forwardButton, NavIcon::Forward, canGoForward, tr("Forward (Alt+Right)"));
+
+    // The toolbar button shows Stop while loading and Reload when idle.
+    m_reloadButton->setIcon(m_theme.icon(tab->isLoading() ? NavIcon::Stop : NavIcon::Reload,
+                                         m_theme.iconColor, 17));
+    m_reloadButton->setToolTip(tab->isLoading() ? tr("Stop loading") : tr("Reload (F5)"));
 
     // The address bar is only rewritten when it does not have focus, so typing
     // is never interrupted by a load finishing.
     if (!m_addressBar->hasFocus())
         m_addressBar->setText(tab->url().toString());
 
-    m_bookmarkAction->setText(m_bookmarks.contains(tab->url()) ? QStringLiteral("★")
-                                                               : QStringLiteral("☆"));
+    const bool bookmarked = m_bookmarks.contains(tab->url());
+    m_bookmarkButton->setIcon(m_theme.icon(bookmarked ? NavIcon::StarFilled : NavIcon::Star,
+                                           bookmarked ? m_theme.accent : m_theme.iconColor, 17));
 
     if (tab->isLoading()) {
-        m_progress->setVisible(true);
-        m_statusLabel->setText(QStringLiteral("Loading %1…").arg(tab->url().displayHost()));
-    } else {
-        m_progress->setVisible(false);
-        if (m_statusLabel->text().startsWith(QLatin1String("Loading")))
-            m_statusLabel->clear();
+        m_statusLabel->setText(tr("Loading %1…").arg(tab->url().displayHost()));
+    } else if (m_statusLabel->text().startsWith(tr("Loading"))) {
+        m_statusLabel->clear();
     }
 
     updateTitle();
@@ -405,6 +631,8 @@ void MainWindow::updateTitle()
 
     setWindowTitle(title.isEmpty() ? QStringLiteral("OpenQBrowser")
                                    : title + QStringLiteral(" — OpenQBrowser"));
+    m_tabBar->setTabText(m_tabBar->currentIndex(),
+                         title.isEmpty() ? tr("New Tab") : title);
 }
 
 } // namespace oqb::ui
