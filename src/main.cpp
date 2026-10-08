@@ -270,7 +270,14 @@ int main(int argc, char **argv)
     });
     guard->start();
 
-    const QUrl target = url.isAbout() ? QUrl(QStringLiteral("about:blank")) : QUrl(url.toString());
+    // A built-in page is served by the browser's own scheme, so it is loaded
+    // like any other page. Substituting an empty document here used to make
+    // "--dump-dom about:home" report a blank page that no user ever sees.
+    const QUrl target =
+        url.isAbout()
+            ? QUrl(QString::fromLatin1(ui::kBuiltinScheme) + u':'
+                   + (url.aboutPage().isEmpty() ? QStringLiteral("home") : url.aboutPage()))
+            : QUrl(url.toString());
 
     if (options.dumpDom) {
         // toHtml() needs no view, so the document can be dumped headlessly.
@@ -287,10 +294,7 @@ int main(int argc, char **argv)
                                  QCoreApplication::exit(exitCode);
                              });
                          });
-        if (url.isAbout())
-            page->setHtml(QStringLiteral("<html><body></body></html>"), target);
-        else
-            page->load(target);
+        page->load(target);
         return app.exec();
     }
 
@@ -318,10 +322,7 @@ int main(int argc, char **argv)
                              });
                          });
         view->show();
-        if (url.isAbout())
-            view->setHtml(QStringLiteral("<html><body></body></html>"), target);
-        else
-            view->load(target);
+        view->load(target);
         return app.exec();
     }
 

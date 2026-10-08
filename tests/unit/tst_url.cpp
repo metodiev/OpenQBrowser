@@ -23,6 +23,10 @@ private slots:
     void handlesFileUrls();
     void interpretsUserInput_data();
     void interpretsUserInput();
+    void absoluteInputIgnoresTheBasePath_data();
+    void absoluteInputIgnoresTheBasePath();
+    void relativeReferencesStillUseTheBase_data();
+    void relativeReferencesStillUseTheBase();
     void buildsSearchQueries();
     void extractsAboutPage();
     void understandsIpv6Hosts();
@@ -185,6 +189,63 @@ void UrlTest::interpretsUserInput()
         QVERIFY(!url.isValid()); // Callers turn this into a search query.
     else
         QCOMPARE(url.toString(), expected);
+}
+
+void UrlTest::absoluteInputIgnoresTheBasePath_data()
+{
+    QTest::addColumn<QString>("input");
+    QTest::addColumn<QString>("base");
+    QTest::addColumn<QString>("expected");
+
+    // What the address bar does: the text is resolved against the page the user
+    // is on, so that a link-like fragment works. An address the user types in
+    // full is absolute, though, and must not pick anything up from the page.
+    QTest::newRow("from the start page")
+        << "www.dir.bg" << "about:home" << "https://www.dir.bg/";
+    QTest::newRow("from a page with a path")
+        << "www.dir.bg" << "https://example.com/some/deep/page" << "https://www.dir.bg/";
+    QTest::newRow("typed with a scheme")
+        << "http://dir.bg" << "https://example.com/a/b" << "http://dir.bg/";
+    QTest::newRow("bare host from the start page")
+        << "dir.bg" << "about:home" << "https://dir.bg/";
+    QTest::newRow("host with a path from the start page")
+        << "dir.bg/news" << "about:home" << "https://dir.bg/news";
+    QTest::newRow("localhost from the start page")
+        << "localhost:8080/x" << "about:home" << "http://localhost:8080/x";
+}
+
+void UrlTest::absoluteInputIgnoresTheBasePath()
+{
+    QFETCH(QString, input);
+    QFETCH(QString, base);
+    QFETCH(QString, expected);
+
+    const Url url = Url::fromUserInput(input, Url::parse(base));
+    QCOMPARE(url.toString(), expected);
+}
+
+void UrlTest::relativeReferencesStillUseTheBase_data()
+{
+    QTest::addColumn<QString>("reference");
+    QTest::addColumn<QString>("base");
+    QTest::addColumn<QString>("expected");
+
+    // The base is still what a *relative* reference is resolved against: this is
+    // the behaviour the fix must not break.
+    QTest::newRow("query only") << "?q=1" << "https://example.com/a/b" << "https://example.com/a/b?q=1";
+    QTest::newRow("fragment only") << "#top" << "https://example.com/a/b" << "https://example.com/a/b#top";
+    QTest::newRow("absolute path") << "/other" << "https://example.com/a/b" << "https://example.com/other";
+    QTest::newRow("relative path") << "c" << "https://example.com/a/b" << "https://example.com/a/c";
+    QTest::newRow("parent directory") << "../x" << "https://example.com/a/b/c" << "https://example.com/a/x";
+}
+
+void UrlTest::relativeReferencesStillUseTheBase()
+{
+    QFETCH(QString, reference);
+    QFETCH(QString, base);
+    QFETCH(QString, expected);
+
+    QCOMPARE(Url::parse(reference, Url::parse(base)).toString(), expected);
 }
 
 void UrlTest::buildsSearchQueries()

@@ -213,7 +213,7 @@ MainWindow::MainWindow(const browser::PageSettings &settings, QWidget *parent)
     connect(m_backButton, &QToolButton::clicked, this, &MainWindow::onBack);
     connect(m_forwardButton, &QToolButton::clicked, this, &MainWindow::onForward);
     connect(m_reloadButton, &QToolButton::clicked, this, &MainWindow::onReloadOrStop);
-    connect(m_homeButton, &QToolButton::clicked, this, &MainWindow::openNewTab);
+    connect(m_homeButton, &QToolButton::clicked, this, &MainWindow::onGoHome);
     connect(m_bookmarkButton, &QToolButton::clicked, this, &MainWindow::onToggleBookmark);
     connect(m_menuButton, &QToolButton::clicked, this, [this] {
         QMenu menu(this);
@@ -546,6 +546,18 @@ void MainWindow::onReloadOrStop()
         tab->stop();
     else
         tab->reload();
+}
+
+void MainWindow::onGoHome()
+{
+    // Home goes to the start page in the tab that is already open, the way every
+    // other browser does it: it is a navigation, so Back returns to the page the
+    // user came from rather than the button being a second "new tab".
+    WebTab *tab = currentTab();
+    if (!tab)
+        return;
+
+    tab->navigate(network::Url::parse(QStringLiteral("about:home")));
 }
 
 void MainWindow::onToggleBookmark()

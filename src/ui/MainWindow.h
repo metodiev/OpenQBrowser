@@ -58,6 +58,7 @@ private slots:
     void onBack();
     void onForward();
     void onReloadOrStop();
+    void onGoHome();
     void onToggleBookmark();
     void onToggleDevTools(bool show);
     void onNewViewRequested(QWebEngineView *view);

@@ -334,11 +334,18 @@ Url Url::parse(const QString &input, const Url &base)
     }
 
     // Path, with the reference-resolution rules from RFC 3986 section 5.2.2.
+    //
+    // Only a reference *without* a scheme is resolved against the base: one that
+    // names its own scheme is absolute and stands alone (§5.2.2 ignores the base
+    // as soon as R.scheme is defined). Inheriting anyway used to append the
+    // current page's path to a typed address, so "www.dir.bg" entered on the
+    // start page became "https://www.dir.bghome".
+    const bool inheritsFromBase = base.isValid() && !hadScheme;
     if (rest.isEmpty()) {
-        // With no path of its own, a reference keeps the base's path, which is
-        // what makes "?q=1" and "#top" work (RFC 3986 §5.2.2). Only an
+        // With no path of its own, a relative reference keeps the base's path,
+        // which is what makes "?q=1" and "#top" work (RFC 3986 §5.2.2). Only an
         // authority written in the reference itself starts from the root.
-        if (base.isValid()) {
+        if (inheritsFromBase) {
             url.m_path = base.m_path;
             if (!url.m_hasQuery && !url.m_hasFragment) {
                 url.m_hasQuery = base.m_hasQuery;
@@ -357,7 +364,7 @@ Url Url::parse(const QString &input, const Url &base)
         url.m_path = u'/' + rest;
     } else if (url.isAbout()) {
         url.m_path = rest;
-    } else if (base.isValid()) {
+    } else if (inheritsFromBase) {
         QString basePath = base.m_path;
         const int lastSlash = basePath.lastIndexOf(u'/');
         basePath = lastSlash >= 0 ? basePath.left(lastSlash + 1) : QString();

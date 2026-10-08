@@ -67,6 +67,8 @@ private slots:
     void shortcutOpensATab();
     void tabShowsThePageIcon();
     void backAndForwardWalkTheHistory();
+    void typingAnAddressDoesNotInheritTheStartPagePath();
+    void homeReturnsToTheStartPageInTheSameTab();
     /// Writes a PNG of the window so the chrome can be reviewed by eye.
     ///
     /// It is skipped unless OQB_UI_PREVIEW is set to the file to write: a
@@ -451,6 +453,135 @@ void TabsTest::backAndForwardWalkTheHistory()
 
     // The address bar follows, which is how the user sees where they are.
     QTRY_COMPARE_WITH_TIMEOUT(windowAddressBar(&window)->text(), second, 5000);
+}
+
+/// A one-page HTTP server, so these tests do not need the network.
+///
+/// It answers every request with a small page whose title is the path asked for,
+/// which is how a test tells which page it is looking at.
+class LoopbackServer
+{
+public:
+    LoopbackServer()
+    {
+        m_server.listen(QHostAddress::LocalHost, 0);
+        QObject::connect(&m_server, &QTcpServer::newConnection, &m_server, [this] {
+            while (QTcpSocket *socket = m_server.nextPendingConnection()) {
+                QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket] {
+                    const QByteArray request = socket->readAll();
+                    const QByteArray path = request.mid(4, request.indexOf(' ', 4) - 4);
+                    const QByteArray body = "<html><head><title>" + path
+                        + "</title></head><body>" + path + "</body></html>";
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: "
+                                  + QByteArray::number(body.size())
+                                  + "\r\nConnection: close\r\n\r\n" + body);
+                    socket->disconnectFromHost();
+                });
+            }
+        });
+    }
+
+    /// The host and port, as a user would type them, without a scheme.
+    QString authority() const
+    {
+        return QStringLiteral("127.0.0.1:%1").arg(m_server.serverPort());
+    }
+
+    /// The URL as the browser ends up showing it: a bare host gains a "/".
+    QString url(const QString &path = QStringLiteral("/")) const
+    {
+        return QStringLiteral("http://%1%2").arg(authority(), path);
+    }
+
+private:
+    QTcpServer m_server;
+};
+
+/// Types `text` into the address bar and presses Enter, the way a user does.
+///
+/// The characters go through key clicks rather than setText(), because only a
+/// real edit raises textEdited, and the address bar relies on that to know the
+/// user has taken control of it.
+static void typeIntoAddressBar(ui::MainWindow *window, const QString &text)
+{
+    QLineEdit *bar = window->findChild<QLineEdit *>(QStringLiteral("AddressBar"));
+    QVERIFY(bar);
+
+    bar->setFocus();
+    bar->selectAll();
+    QTest::keyClicks(bar, text);
+    QTest::keyClick(bar, Qt::Key_Return);
+}
+
+void TabsTest::typingAnAddressDoesNotInheritTheStartPagePath()
+{
+    // The reported bug: with the start page open (its own address is
+    // "about:home", so its path is "home"), typing "www.dir.bg" produced
+    // "https://www.dir.bghome" - the page's path was glued onto the typed host.
+    const LoopbackServer server;
+
+    ui::MainWindow window;
+    window.show();
+
+    ui::WebTab *tab = window.findChild<ui::WebTab *>();
+    QVERIFY(tab);
+
+    // Wait for the start page, so the resolution really does happen against a
+    // page whose path would corrupt the result.
+    QVERIFY2(waitFor([&] { return tab->url().toString() == QStringLiteral("about:home"); }, 10000),
+             "the window did not open on the start page");
+
+    const QString expected = server.url();
+    typeIntoAddressBar(&window, server.authority());
+
+    QVERIFY2(waitFor([&] { return tab->url().toString() == expected && !tab->isLoading(); }, 15000),
+             qPrintable(QStringLiteral("typing %1 gave \"%2\", expected \"%3\"")
+                            .arg(server.authority(), tab->url().toString(), expected)));
+
+    // The address bar shows the same thing, which is what the user reads.
+    QTRY_COMPARE_WITH_TIMEOUT(windowAddressBar(&window)->text(), expected, 5000);
+    QVERIFY2(!windowAddressBar(&window)->text().contains(QStringLiteral("home")),
+             "the start page's path leaked into the address bar");
+}
+
+void TabsTest::homeReturnsToTheStartPageInTheSameTab()
+{
+    const LoopbackServer server;
+    const QString away = server.url(QStringLiteral("/away"));
+
+    ui::MainWindow window;
+    window.show();
+
+    ui::WebTab *tab = window.findChild<ui::WebTab *>();
+    QVERIFY(tab);
+
+    QToolButton *home = navButton(&window, QStringLiteral("HomeButton"));
+    QVERIFY2(home, "the toolbar must have a home button");
+
+    QVERIFY2(waitFor([&] { return tab->url().toString() == QStringLiteral("about:home"); }, 10000),
+             "the window did not open on the start page");
+
+    const int tabsBefore = window.findChildren<ui::WebTab *>().size();
+    QSignalSpy finished(tab, &ui::WebTab::loadFinished);
+    window.openUrl(network::Url::parse(away));
+    QVERIFY2(waitFor([&] { return finished.count() > 0; }, 15000), "the page did not load");
+    QCOMPARE(tab->url().toString(), away);
+
+    home->click();
+
+    // Home is a navigation of the open tab, not a second tab.
+    QVERIFY2(waitFor([&] { return tab->url().toString() == QStringLiteral("about:home"); }, 15000),
+             "home did not return to the start page");
+    QCOMPARE(window.findChildren<ui::WebTab *>().size(), tabsBefore);
+
+    // And because it is a navigation, Back goes to the page that was left.
+    QToolButton *back = navButton(&window, QStringLiteral("BackButton"));
+    QVERIFY(back);
+    QVERIFY2(waitFor([&] { return back->isEnabled(); }, 5000),
+             "home must be a history entry so back works after it");
+    back->click();
+    QVERIFY2(waitFor([&] { return tab->url().toString() == away; }, 15000),
+             "back after home did not return to the previous page");
 }
 
 QTEST_MAIN(TabsTest)
